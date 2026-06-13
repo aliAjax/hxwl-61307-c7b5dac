@@ -1162,3 +1162,253 @@ textarea { min-height: 76px; resize: vertical; }
   font-size: 13px;
   line-height: 1.5;
 }
+
+.purchase-status {
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.purchase-status-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.purchase-status-ordered {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.purchase-status-shipping {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.purchase-status-arrived {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.purchase-record {
+  border-left: 4px solid #7c3aed;
+  background: #fafbff;
+}
+
+.purchase-record:hover {
+  border-color: #7c3aed;
+  box-shadow: 0 8px 28px rgba(124, 58, 237, 0.12);
+}
+
+.purchase-ship-tag {
+  background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+}
+
+.purchase-app-preview {
+  border-color: #ddd6fe;
+  background: #faf5ff;
+  color: #5b21b6;
+}
+
+.purchase-qty-display {
+  color: #7c3aed !important;
+}
+
+.purchase-detail-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.purchase-detail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.purchase-detail-item svg {
+  color: #7c3aed;
+  flex-shrink: 0;
+}
+
+.purchase-detail-item strong {
+  margin-left: auto;
+}
+
+.purchase-related-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #d1d5db;
+}
+
+.purchase-related-info {
+  padding: 10px 12px;
+  background: #faf5ff;
+  border: 1px solid #ddd6fe;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.purchase-related-info p {
+  color: #5b21b6;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.purchase-related-info strong {
+  color: #4c1d95;
+}
+
+.purchase-actions {
+  margin-top: 12px;
+}
+
+.purchase-actions .primary {
+  background: #7c3aed;
+}
+
+.purchase-actions .primary:hover {
+  opacity: 0.9;
+}
+
+.purchase-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #d1d5db;
+}
+
+.purchase-section-title {
+  color: #7c3aed;
+}
+
+.purchase-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.purchase-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fafafa;
+  overflow: hidden;
+}
+
+.purchase-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f5f3ff;
+  border-bottom: 1px solid #ede9fe;
+}
+
+.purchase-item-view {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #ddd6fe;
+  background: #ffffff;
+  color: #7c3aed;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s;
+}
+
+.purchase-item-view:hover {
+  background: #ede9fe;
+  border-color: #7c3aed;
+}
+
+.purchase-item-body {
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.purchase-item-body p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #4b5563;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.purchase-item-body svg {
+  color: #7c3aed;
+  flex-shrink: 0;
+}
+
+.purchase-create-entry {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed #d1d5db;
+}
+
+.purchase-create-entry .primary {
+  background: #7c3aed;
+  width: auto;
+  padding: 10px 16px;
+}
+
+.purchase-create-form {
+  margin-top: 14px;
+  padding: 14px;
+  padding-top: 12px;
+  border: 1px solid #ddd6fe;
+  border-radius: 10px;
+  background: #fafbff;
+}
+
+.purchase-create-form .form-grid {
+  margin-top: 10px;
+}
+
+.purchase-form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.purchase-form-actions .primary {
+  flex: 1;
+  background: #7c3aed;
+  margin-top: 0;
+}
+
+.purchase-form-cancel {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #d0d5dd;
+  background: #ffffff;
+  border-radius: 6px;
+  padding: 12px;
+  color: #344054;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.16s;
+}
+
+.purchase-form-cancel:hover {
+  background: #f9fafb;
+  border-color: #9ca3af;
+}

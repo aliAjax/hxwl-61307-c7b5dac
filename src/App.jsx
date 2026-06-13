@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock } from 'lucide-react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -300,6 +300,37 @@ const templateConfig = {
   }
 };
 
+const purchaseConfig = {
+  storage: "hxwl-61307-purchase-orders",
+  title: "采购跟踪",
+  subtitle: "已批准但库存不足的备件转为采购任务，跟踪采购到货进度",
+  domain: "采购管理",
+  accent: "#7c3aed",
+  statuses: ["待下单", "已下单", "运输中", "已到货"],
+  suppliers: [
+    "上海海事设备有限公司",
+    "广州船用备件供应站",
+    "天津远洋物资供应公司",
+    "青岛港船舶服务有限公司",
+    "宁波舟山海事装备"
+  ],
+  fields: [
+    { key: "supplier", label: "供应商", type: "select", placeholder: "请选择供应商" },
+    { key: "purchaseQty", label: "采购数量", type: "number", placeholder: "1" },
+    { key: "etaDate", label: "预计到港日期", type: "date", placeholder: "" },
+    { key: "arrivalDate", label: "实际到货日期", type: "date", placeholder: "" },
+    { key: "purchaseNote", label: "采购备注", type: "textarea", placeholder: "采购备注信息" }
+  ],
+  defaultValues: {
+    supplier: "",
+    purchaseQty: "",
+    etaDate: "",
+    arrivalDate: "",
+    purchaseNote: ""
+  },
+  seed: []
+};
+
 const today = new Date().toISOString().slice(0, 10);
 
 function uid() {
@@ -359,6 +390,18 @@ function loadTemplates() {
   return templateConfig.seed.map(item => ({ id: uid(), ...item }));
 }
 
+function loadPurchases() {
+  const raw = localStorage.getItem(purchaseConfig.storage);
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return purchaseConfig.seed.map(item => ({ id: uid(), ...item }));
+    }
+  }
+  return purchaseConfig.seed.map(item => ({ id: uid(), ...item }));
+}
+
 function isLowStock(item) {
   const current = Number(item.currentStock);
   const safety = Number(item.safetyStock);
@@ -376,6 +419,22 @@ function hasOverlap(target, records) {
 
 function wasDispatched(item) {
   return item.hasBeenDispatched || (item.timeline || []).some((step) => step.status === '已发放');
+}
+
+function purchaseStatusClass(status) {
+  const map = {
+    '待下单': 'purchase-status-pending',
+    '已下单': 'purchase-status-ordered',
+    '运输中': 'purchase-status-shipping',
+    '已到货': 'purchase-status-arrived'
+  };
+  return map[status] || 'purchase-status-pending';
+}
+
+function isOverdue(etaDate) {
+  if (!etaDate) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return etaDate < today;
 }
 
 function statusClass(status) {
@@ -417,6 +476,12 @@ function App() {
   const [templateFilters, setTemplateFilters] = useState({ query: '', system: '全部' });
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [selectedApplyTemplate, setSelectedApplyTemplate] = useState('');
+
+  const [purchases, setPurchases] = useState(loadPurchases);
+  const [purchaseForm, setPurchaseForm] = useState({ ...purchaseConfig.defaultValues, applicationId: '' });
+  const [purchaseFilters, setPurchaseFilters] = useState({ query: '', status: '全部', ship: '全部' });
+  const [selectedPurchase, setSelectedPurchase] = useState(null);
+  const [showCreatePurchaseFromApp, setShowCreatePurchaseFromApp] = useState(false);
 
   const [approvalSubTab, setApprovalSubTab] = useState('urgent');
   const [approvalSearch, setApprovalSearch] = useState('');
@@ -507,6 +572,126 @@ function App() {
   function persistTemplates(next) {
     setTemplates(next);
     localStorage.setItem(templateConfig.storage, JSON.stringify(next));
+  }
+
+  function persistPurchases(next) {
+    setPurchases(next);
+    localStorage.setItem(purchaseConfig.storage, JSON.stringify(next));
+  }
+
+  function addPurchase(event) {
+    event.preventDefault();
+    if (!purchaseForm.applicationId) return;
+    const application = records.find((item) => item.id === purchaseForm.applicationId);
+    if (!application) return;
+    const purchaseRecord = {
+      id: uid(),
+      applicationId: purchaseForm.applicationId,
+      ship: application.ship,
+      partName: application.partName,
+      system: application.system,
+      location: application.location,
+      qty: application.qty,
+      urgency: application.urgency,
+      supplier: purchaseForm.supplier,
+      purchaseQty: purchaseForm.purchaseQty || application.approvedQty || application.qty,
+      etaDate: purchaseForm.etaDate,
+      arrivalDate: purchaseForm.arrivalDate || '',
+      purchaseNote: purchaseForm.purchaseNote,
+      status: purchaseForm.arrivalDate ? '已到货' : '待下单',
+      createdAt: new Date().toISOString(),
+      timeline: [{
+        status: purchaseForm.arrivalDate ? '已到货' : '待下单',
+        at: today,
+        by: '操作员',
+        comment: purchaseForm.purchaseNote || '',
+        action: purchaseForm.arrivalDate ? 'arrive' : 'create'
+      }]
+    };
+    persistPurchases([purchaseRecord, ...purchases]);
+    const updatedRecords = records.map((item) => item.id === purchaseForm.applicationId ? {
+      ...item,
+      hasPurchase: true,
+      purchaseStatus: purchaseRecord.status,
+      timeline: [...(item.timeline || []), {
+        status: '采购中',
+        at: today,
+        by: '系统',
+        comment: `已创建采购任务，供应商：${purchaseForm.supplier}，采购数量：${purchaseRecord.purchaseQty}`,
+        action: 'purchase-create'
+      }]
+    } : item);
+    persist(updatedRecords);
+    if (selected?.id === purchaseForm.applicationId) {
+      setSelected(updatedRecords.find((item) => item.id === purchaseForm.applicationId));
+    }
+    setPurchaseForm({ ...purchaseConfig.defaultValues, applicationId: '' });
+    setSelectedPurchase(purchaseRecord);
+    setShowCreatePurchaseFromApp(false);
+  }
+
+  function updatePurchaseStatus(id, status, extraData = {}) {
+    const purchase = purchases.find((p) => p.id === id);
+    if (!purchase) return;
+    const timelineEntry = {
+      status,
+      at: today,
+      by: '操作员',
+      comment: extraData.comment || '',
+      action: status === '已到货' ? 'arrive' : 'update'
+    };
+    const nextPurchases = purchases.map((p) => p.id === id ? {
+      ...p,
+      status,
+      arrivalDate: status === '已到货' ? (extraData.arrivalDate || today) : p.arrivalDate,
+      timeline: [...(p.timeline || []), timelineEntry]
+    } : p);
+    persistPurchases(nextPurchases);
+    if (selectedPurchase?.id === id) {
+      setSelectedPurchase(nextPurchases.find((p) => p.id === id));
+    }
+    if (purchase.applicationId) {
+      const updatedRecords = records.map((item) => item.id === purchase.applicationId ? {
+        ...item,
+        purchaseStatus: status,
+        timeline: [...(item.timeline || []), {
+          status: status === '已到货' ? '已到货' : '采购中',
+          at: today,
+          by: '系统',
+          comment: status === '已到货'
+            ? `采购已到货，数量：${purchase.purchaseQty}，${extraData.comment || ''}`
+            : `采购状态更新为：${status}`,
+          action: status === '已到货' ? 'purchase-arrive' : 'purchase-update'
+        }]
+      } : item);
+      persist(updatedRecords);
+      if (selected?.id === purchase.applicationId) {
+        setSelected(updatedRecords.find((item) => item.id === purchase.applicationId));
+      }
+    }
+  }
+
+  function removePurchase(id) {
+    const purchase = purchases.find((p) => p.id === id);
+    const next = purchases.filter((p) => p.id !== id);
+    persistPurchases(next);
+    if (selectedPurchase?.id === id) setSelectedPurchase(null);
+    if (purchase?.applicationId) {
+      const remainingPurchases = next.filter((p) => p.applicationId === purchase.applicationId);
+      const updatedRecords = records.map((item) => item.id === purchase.applicationId ? {
+        ...item,
+        hasPurchase: remainingPurchases.length > 0,
+        purchaseStatus: remainingPurchases.length > 0 ? remainingPurchases[0].status : undefined
+      } : item);
+      persist(updatedRecords);
+      if (selected?.id === purchase.applicationId) {
+        setSelected(updatedRecords.find((item) => item.id === purchase.applicationId));
+      }
+    }
+  }
+
+  function getPurchasesByApplicationId(applicationId) {
+    return purchases.filter((p) => p.applicationId === applicationId);
   }
 
   function addTemplate(event) {
@@ -754,6 +939,34 @@ function App() {
     { label: "电气系统", value: templates.filter((item) => item.system === '电气').length },
   ];
 
+  const filteredPurchases = useMemo(() => {
+    return purchases
+      .filter((item) => !purchaseFilters.query || `${item.ship}${item.partName}${item.system}${item.supplier || ''}`.includes(purchaseFilters.query))
+      .filter((item) => purchaseFilters.status === '全部' || item.status === purchaseFilters.status)
+      .filter((item) => purchaseFilters.ship === '全部' || item.ship === purchaseFilters.ship)
+      .sort((a, b) => {
+        const dateA = a.createdAt || '';
+        const dateB = b.createdAt || '';
+        return String(dateB).localeCompare(String(dateA));
+      });
+  }, [purchases, purchaseFilters]);
+
+  const purchaseMetrics = [
+    { label: "采购任务总数", value: purchases.length },
+    { label: "待下单", value: purchases.filter((item) => item.status === '待下单').length },
+    { label: "已下单", value: purchases.filter((item) => item.status === '已下单').length },
+    { label: "运输中", value: purchases.filter((item) => item.status === '运输中').length },
+    { label: "已到货", value: purchases.filter((item) => item.status === '已到货').length },
+  ];
+
+  const purchasesByStatus = useMemo(() => {
+    return filteredPurchases.reduce((acc, item) => {
+      const key = item.status || '未分类';
+      (acc[key] ||= []).push(item);
+      return acc;
+    }, {});
+  }, [filteredPurchases]);
+
   const templatesBySystem = useMemo(() => {
     return filteredTemplates.reduce((acc, item) => {
       const key = item.system || '未分类';
@@ -810,15 +1023,15 @@ function App() {
   ];
 
   return (
-    <main className="shell" style={{ '--accent': activeTab === 'approval' ? '#ea580c' : activeTab === 'inventory' ? inventoryConfig.accent : activeTab === 'distribution' ? distConfig.accent : activeTab === 'templates' ? templateConfig.accent : appConfig.accent }}>
+    <main className="shell" style={{ '--accent': activeTab === 'approval' ? '#ea580c' : activeTab === 'inventory' ? inventoryConfig.accent : activeTab === 'distribution' ? distConfig.accent : activeTab === 'templates' ? templateConfig.accent : activeTab === 'purchase' ? purchaseConfig.accent : appConfig.accent }}>
       <section className="hero">
         <div>
           <div className="eyebrow">
-            {activeTab === 'approval' ? <Gavel size={18} /> : <Ship size={18} />}
-            {activeTab === 'approval' ? '审批管理' : activeTab === 'inventory' ? inventoryConfig.domain : activeTab === 'distribution' ? distConfig.domain : activeTab === 'templates' ? templateConfig.domain : appConfig.domain}
+            {activeTab === 'approval' ? <Gavel size={18} /> : activeTab === 'purchase' ? <ShoppingCart size={18} /> : <Ship size={18} />}
+            {activeTab === 'approval' ? '审批管理' : activeTab === 'inventory' ? inventoryConfig.domain : activeTab === 'distribution' ? distConfig.domain : activeTab === 'templates' ? templateConfig.domain : activeTab === 'purchase' ? purchaseConfig.domain : appConfig.domain}
           </div>
-          <h1>{activeTab === 'approval' ? '审批工作台' : activeTab === 'inventory' ? inventoryConfig.title : activeTab === 'distribution' ? distConfig.title : activeTab === 'templates' ? templateConfig.title : appConfig.title}</h1>
-          <p>{activeTab === 'approval' ? '集中处理待审批备件申请，支持批准、驳回与调整批准数量' : activeTab === 'inventory' ? inventoryConfig.subtitle : activeTab === 'distribution' ? distConfig.subtitle : activeTab === 'templates' ? templateConfig.subtitle : appConfig.subtitle}</p>
+          <h1>{activeTab === 'approval' ? '审批工作台' : activeTab === 'inventory' ? inventoryConfig.title : activeTab === 'distribution' ? distConfig.title : activeTab === 'templates' ? templateConfig.title : activeTab === 'purchase' ? purchaseConfig.title : appConfig.title}</h1>
+          <p>{activeTab === 'approval' ? '集中处理待审批备件申请，支持批准、驳回与调整批准数量' : activeTab === 'inventory' ? inventoryConfig.subtitle : activeTab === 'distribution' ? distConfig.subtitle : activeTab === 'templates' ? templateConfig.subtitle : activeTab === 'purchase' ? purchaseConfig.subtitle : appConfig.subtitle}</p>
         </div>
         <div className="port-card">
           <span>Local Port</span>
@@ -861,6 +1074,13 @@ function App() {
         >
           <Bookmark size={16} />
           常用备件模板
+        </button>
+        <button
+          className={'tab ' + (activeTab === 'purchase' ? 'tab-active' : '')}
+          onClick={() => setActiveTab('purchase')}
+        >
+          <ShoppingCart size={16} />
+          采购跟踪
         </button>
       </div>
 
@@ -1108,6 +1328,132 @@ function App() {
                       </div>
                     </div>
                   )}
+
+                  {(() => {
+                    const relatedPurchases = getPurchasesByApplicationId(selected.id);
+                    return (
+                      <>
+                        {relatedPurchases.length > 0 && (
+                          <div className="purchase-section">
+                            <div className="dist-section-title purchase-section-title">
+                              <ShoppingCart size={15} />
+                              <strong>关联采购任务</strong>
+                            </div>
+                            <div className="purchase-list">
+                              {relatedPurchases.map((p) => (
+                                <div key={p.id} className="purchase-item">
+                                  <div className="purchase-item-head">
+                                    <span className={'status purchase-status ' + purchaseStatusClass(p.status)}>{p.status}</span>
+                                    <button
+                                      type="button"
+                                      className="purchase-item-view"
+                                      onClick={() => {
+                                        setSelectedPurchase(p);
+                                        setActiveTab('purchase');
+                                      }}
+                                    >
+                                      <ArrowRight size={12} />查看
+                                    </button>
+                                  </div>
+                                  <div className="purchase-item-body">
+                                    <p><Factory size={12} /> 供应商: {p.supplier || '-'}</p>
+                                    <p><Package size={12} /> 采购数量: {p.purchaseQty}</p>
+                                    {p.etaDate && <p><CalendarDays size={12} /> 预计到港: {p.etaDate}</p>}
+                                    {p.arrivalDate && <p><Truck size={12} /> 实际到货: {p.arrivalDate}</p>}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {!showCreatePurchaseFromApp
+                          ? (selected.status === '已批准' && !wasDispatched(selected) && (
+                            <div className="purchase-create-entry">
+                              <button
+                                className="primary"
+                                type="button"
+                                onClick={() => {
+                                  setPurchaseForm({
+                                    ...purchaseConfig.defaultValues,
+                                    applicationId: selected.id,
+                                    purchaseQty: selected.approvedQty || selected.qty
+                                  });
+                                  setShowCreatePurchaseFromApp(true);
+                                }}
+                              >
+                                <ShoppingCart size={14} />
+                                创建采购任务
+                              </button>
+                            </div>
+                          ))
+                          : (
+                            <form className="purchase-create-form" onSubmit={addPurchase}>
+                              <div className="dist-section-title purchase-section-title">
+                                <ShoppingCart size={15} />
+                                <strong>创建采购任务</strong>
+                              </div>
+                              <div className="form-grid">
+                                <label className="wide">
+                                  <span>供应商</span>
+                                  <select
+                                    value={purchaseForm.supplier}
+                                    onChange={(event) => setPurchaseForm({ ...purchaseForm, supplier: event.target.value })}
+                                  >
+                                    <option value="">-- 请选择供应商 --</option>
+                                    {purchaseConfig.suppliers.map((s) => (
+                                      <option key={s}>{s}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label>
+                                  <span>采购数量</span>
+                                  <input
+                                    type="number"
+                                    value={purchaseForm.purchaseQty}
+                                    onChange={(event) => setPurchaseForm({ ...purchaseForm, purchaseQty: event.target.value })}
+                                    placeholder="采购数量"
+                                    min="1"
+                                  />
+                                </label>
+                                <label>
+                                  <span>预计到港日期</span>
+                                  <input
+                                    type="date"
+                                    value={purchaseForm.etaDate}
+                                    onChange={(event) => setPurchaseForm({ ...purchaseForm, etaDate: event.target.value })}
+                                  />
+                                </label>
+                                <label className="wide">
+                                  <span>采购备注</span>
+                                  <textarea
+                                    value={purchaseForm.purchaseNote}
+                                    onChange={(event) => setPurchaseForm({ ...purchaseForm, purchaseNote: event.target.value })}
+                                    placeholder="采购备注信息"
+                                  />
+                                </label>
+                              </div>
+                              <div className="purchase-form-actions">
+                                <button className="primary" type="submit" disabled={!purchaseForm.supplier}>
+                                  <Plus size={14} />确认创建
+                                </button>
+                                <button
+                                  type="button"
+                                  className="purchase-form-cancel"
+                                  onClick={() => {
+                                    setPurchaseForm({ ...purchaseConfig.defaultValues, applicationId: '' });
+                                    setShowCreatePurchaseFromApp(false);
+                                  }}
+                                >
+                                  取消
+                                </button>
+                              </div>
+                            </form>
+                          )
+                        }
+                      </>
+                    );
+                  })()}
                 </div>
               ) : (
                 <p className="empty">点击任意记录查看详情和状态流转。</p>
@@ -1841,6 +2187,306 @@ function App() {
                 </div>
               ) : (
                 <p className="empty">点击任意模板查看详情，可一键套用创建申请。</p>
+              )}
+            </aside>
+          </section>
+        </>
+      )}
+
+      {activeTab === 'purchase' && (
+        <>
+          <section className="metrics">
+            {purchaseMetrics.map((metric) => (
+              <article className="metric" key={metric.label}>
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+              </article>
+            ))}
+          </section>
+
+          <section className="workspace">
+            <form className="panel form-panel" onSubmit={addPurchase}>
+              <div className="panel-title">
+                <ShoppingCart size={18} />
+                <h2>创建采购任务</h2>
+              </div>
+              <div className="form-grid">
+                <label className="wide">
+                  <span>关联申请（已批准）</span>
+                  <select
+                    value={purchaseForm.applicationId}
+                    onChange={(event) => {
+                      const appId = event.target.value;
+                      const app = records.find((item) => item.id === appId);
+                      setPurchaseForm({
+                        ...purchaseForm,
+                        applicationId: appId,
+                        purchaseQty: app ? (app.approvedQty || app.qty) : ''
+                      });
+                    }}
+                  >
+                    <option value="">-- 请选择申请 --</option>
+                    {records
+                      .filter((item) => item.status === '已批准' && !wasDispatched(item))
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.partName} - {item.ship} - {item.system} - 需求{item.qty}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                {purchaseForm.applicationId && (() => {
+                  const app = records.find((item) => item.id === purchaseForm.applicationId);
+                  return app ? (
+                    <div className="wide dist-app-preview purchase-app-preview">
+                      <span className="dist-app-label">申请信息</span>
+                      <span>{app.partName} | {app.ship} · {app.system} · {app.location} | 需求{app.qty} | {app.urgency}紧急</span>
+                    </div>
+                  ) : null;
+                })()}
+                <label className="wide">
+                  <span>供应商</span>
+                  <select
+                    value={purchaseForm.supplier}
+                    onChange={(event) => setPurchaseForm({ ...purchaseForm, supplier: event.target.value })}
+                  >
+                    <option value="">-- 请选择供应商 --</option>
+                    {purchaseConfig.suppliers.map((s) => (
+                      <option key={s}>{s}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>采购数量</span>
+                  <input
+                    type="number"
+                    value={purchaseForm.purchaseQty}
+                    onChange={(event) => setPurchaseForm({ ...purchaseForm, purchaseQty: event.target.value })}
+                    placeholder="采购数量"
+                    min="1"
+                  />
+                </label>
+                <label>
+                  <span>预计到港日期</span>
+                  <input
+                    type="date"
+                    value={purchaseForm.etaDate}
+                    onChange={(event) => setPurchaseForm({ ...purchaseForm, etaDate: event.target.value })}
+                  />
+                </label>
+                <label>
+                  <span>实际到货日期（可选）</span>
+                  <input
+                    type="date"
+                    value={purchaseForm.arrivalDate}
+                    onChange={(event) => setPurchaseForm({ ...purchaseForm, arrivalDate: event.target.value })}
+                  />
+                </label>
+                <label className="wide">
+                  <span>采购备注</span>
+                  <textarea
+                    value={purchaseForm.purchaseNote}
+                    onChange={(event) => setPurchaseForm({ ...purchaseForm, purchaseNote: event.target.value })}
+                    placeholder="采购备注信息"
+                  />
+                </label>
+              </div>
+              <button className="primary" type="submit" disabled={!purchaseForm.applicationId || !purchaseForm.supplier}>
+                <Plus size={18} />创建采购任务
+              </button>
+              <p className="hint">选择已批准的申请，填写采购信息后提交。到货后可在采购列表中更新状态。</p>
+            </form>
+
+            <section className="panel list-panel">
+              <div className="toolbar">
+                <div className="search">
+                  <Search size={16} />
+                  <input value={purchaseFilters.query} onChange={(event) => setPurchaseFilters({ ...purchaseFilters, query: event.target.value })} placeholder="搜索备件/供应商/船舶/系统" />
+                </div>
+                <select value={purchaseFilters.ship} onChange={(event) => setPurchaseFilters({ ...purchaseFilters, ship: event.target.value })}>
+                  <option value="全部">全部船舶</option>
+                  {appConfig.ships.map((ship) => <option key={ship}>{ship}</option>)}
+                </select>
+                <select value={purchaseFilters.status} onChange={(event) => setPurchaseFilters({ ...purchaseFilters, status: event.target.value })}>
+                  <option value="全部">全部状态</option>
+                  {purchaseConfig.statuses.map((s) => <option key={s}>{s}</option>)}
+                </select>
+              </div>
+
+              <div className="records">
+                {filteredPurchases.length === 0 ? (
+                  <p className="empty">暂无采购任务。</p>
+                ) : (
+                  filteredPurchases.map((item) => (
+                    <article className="record purchase-record" key={item.id} onClick={() => setSelectedPurchase(item)}>
+                      <div className="record-ship-tag purchase-ship-tag">
+                        <Ship size={13} />
+                        <span>{item.ship}</span>
+                      </div>
+                      <div className="record-head">
+                        <div>
+                          <h3>{item.partName}</h3>
+                          <p>{`${item.system} · ${item.location}`}</p>
+                        </div>
+                        <span className={'status purchase-status ' + purchaseStatusClass(item.status)}>{item.status}</span>
+                      </div>
+                      <p className="record-detail">
+                        {`采购${item.purchaseQty}件 | 供应商: ${item.supplier || '-'}`}
+                      </p>
+                      {item.etaDate && <p className="record-detail">{`预计到港: ${item.etaDate}${item.arrivalDate ? ` | 实际到货: ${item.arrivalDate}` : ''}`}</p>}
+                      {item.purchaseNote && <p className="record-detail">{`备注: ${item.purchaseNote}`}</p>}
+                      {item.status === '运输中' && isOverdue(item.etaDate) && (
+                        <div className="warning"><AlertTriangle size={15} />已超过预计到港日期</div>
+                      )}
+                      <div className="actions" onClick={(event) => event.stopPropagation()}>
+                        {purchaseConfig.statuses.map((status) => (
+                          <button
+                            key={status}
+                            type="button"
+                            disabled={item.status === '已到货'}
+                            onClick={() => updatePurchaseStatus(item.id, status)}
+                          >{status}</button>
+                        ))}
+                        <button className="ghost-danger" type="button" onClick={() => removePurchase(item.id)}><Trash2 size={14} /></button>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+          </section>
+
+          <section className="insights">
+            <div className="panel">
+              <div className="panel-title">
+                <CalendarDays size={18} />
+                <h2>按采购状态分组</h2>
+              </div>
+              <div className="date-groups">
+                {Object.entries(purchasesByStatus).map(([status, items]) => (
+                  <div key={status} className="date-group">
+                    <strong>{status}</strong>
+                    <span>{items.length}条采购</span>
+                  </div>
+                ))}
+                {filteredPurchases.length === 0 && <p className="empty">暂无采购统计数据。</p>}
+              </div>
+            </div>
+
+            <aside className="panel detail-panel">
+              <div className="panel-title">
+                <CheckCircle2 size={18} />
+                <h2>采购详情</h2>
+              </div>
+              {selectedPurchase ? (
+                <div className="detail">
+                  <div className="detail-ship-tag">
+                    <Ship size={16} />
+                    <span>{selectedPurchase.ship}</span>
+                  </div>
+                  <h3>{selectedPurchase.partName}</h3>
+                  <p>{`${selectedPurchase.system} · ${selectedPurchase.location} · ${selectedPurchase.urgency || '中'}紧急`}</p>
+                  <div className="stock-info">
+                    <div className="stock-item">
+                      <span>需求数量</span>
+                      <strong>{selectedPurchase.qty}</strong>
+                    </div>
+                    <div className="stock-item">
+                      <span>采购数量</span>
+                      <strong className="purchase-qty-display">{selectedPurchase.purchaseQty}</strong>
+                    </div>
+                  </div>
+                  <div className="purchase-detail-section">
+                    <div className="purchase-detail-item">
+                      <Factory size={15} />
+                      <span className="dist-field-label">供应商</span>
+                      <strong>{selectedPurchase.supplier || '-'}</strong>
+                    </div>
+                    <div className="purchase-detail-item">
+                      <CalendarDays size={15} />
+                      <span className="dist-field-label">预计到港</span>
+                      <span>{selectedPurchase.etaDate || '未设置'}</span>
+                    </div>
+                    <div className="purchase-detail-item">
+                      <Truck size={15} />
+                      <span className="dist-field-label">实际到货</span>
+                      <span>{selectedPurchase.arrivalDate || '未到货'}</span>
+                    </div>
+                    <div className="purchase-detail-item">
+                      <ShoppingCart size={15} />
+                      <span className="dist-field-label">采购状态</span>
+                      <span className={'status purchase-status ' + purchaseStatusClass(selectedPurchase.status)}>{selectedPurchase.status}</span>
+                    </div>
+                    {selectedPurchase.purchaseNote && (
+                      <div className="purchase-detail-item">
+                        <FileText size={15} />
+                        <span className="dist-field-label">采购备注</span>
+                        <span>{selectedPurchase.purchaseNote}</span>
+                      </div>
+                    )}
+                    {selectedPurchase.applicationId && (() => {
+                      const app = records.find((r) => r.id === selectedPurchase.applicationId);
+                      return app ? (
+                        <div className="purchase-related-section">
+                          <div className="dist-section-title">
+                            <ClipboardList size={15} />
+                            <strong>关联申请</strong>
+                          </div>
+                          <div className="purchase-related-info">
+                            <p><strong>{app.partName}</strong> · {app.ship}</p>
+                            <p>{`${app.system} · ${app.location} | 需求${app.qty}`}</p>
+                            <button
+                              className="primary"
+                              type="button"
+                              style={{ marginTop: '8px' }}
+                              onClick={() => {
+                                setSelected(app);
+                                setActiveTab('application');
+                              }}
+                            >
+                              <ArrowRight size={14} />查看申请详情
+                            </button>
+                          </div>
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                  {selectedPurchase.status !== '已到货' && (
+                    <div className="purchase-actions">
+                      <button
+                        className="primary"
+                        type="button"
+                        onClick={() => updatePurchaseStatus(selectedPurchase.id, '已到货', { comment: '采购已入库' })}
+                      >
+                        <RefreshCw size={14} />标记为已到货
+                      </button>
+                    </div>
+                  )}
+                  <div className="approval-timeline-section">
+                    <div className="approval-form-divider">
+                      <Clock size={14} />
+                      <span>采购进度时间线</span>
+                    </div>
+                    <div className="approval-timeline">
+                      {(selectedPurchase.timeline || []).map((step, index) => (
+                        <div key={index} className={'approval-timeline-item ' + (step.action === 'arrive' ? 'timeline-approved' : step.action === 'create' ? 'timeline-approved' : '')}>
+                          <div className="timeline-dot" />
+                          <div className="timeline-content">
+                            <div className="timeline-header">
+                              <strong>{step.status}</strong>
+                              <span className="timeline-meta">{step.at} · {step.by}</span>
+                            </div>
+                            {step.comment && (
+                              <p className="timeline-detail">{step.comment}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="empty">点击任意采购任务查看详情。</p>
               )}
             </aside>
           </section>
