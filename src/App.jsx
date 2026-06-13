@@ -11,6 +11,13 @@ const appConfig = {
   "icon": "Ship",
   "storage": "hxwl-61307-ship-spares",
   "accent": "#0891b2",
+  "ships": [
+    "远洋一号",
+    "海运之星",
+    "长江明珠",
+    "南海先锋",
+    "东方之珠"
+  ],
   "statuses": [
     "待审批",
     "已批准",
@@ -19,6 +26,19 @@ const appConfig = {
   ],
   "primaryStatus": "待审批",
   "fields": [
+    {
+      "key": "ship",
+      "label": "所属船舶",
+      "type": "select",
+      "placeholder": "远洋一号",
+      "options": [
+        "远洋一号",
+        "海运之星",
+        "长江明珠",
+        "南海先锋",
+        "东方之珠"
+      ]
+    },
     {
       "key": "partName",
       "label": "备件名称",
@@ -74,6 +94,7 @@ const appConfig = {
   ],
   "seed": [
     {
+      "ship": "远洋一号",
       "partName": "海水泵密封圈",
       "system": "机舱",
       "location": "二副库",
@@ -83,6 +104,7 @@ const appConfig = {
       "status": "待审批"
     },
     {
+      "ship": "海运之星",
       "partName": "甲板照明灯泡",
       "system": "电气",
       "location": "甲板库",
@@ -92,6 +114,7 @@ const appConfig = {
       "status": "已批准"
     },
     {
+      "ship": "长江明珠",
       "partName": "消防水带接口",
       "system": "消防",
       "location": "消防站",
@@ -99,6 +122,56 @@ const appConfig = {
       "urgency": "高",
       "reason": "演练后发现老化",
       "status": "已发放"
+    },
+    {
+      "ship": "远洋一号",
+      "partName": "主机润滑油滤器",
+      "system": "机舱",
+      "location": "机舱油库",
+      "qty": "3",
+      "urgency": "中",
+      "reason": "常规保养更换",
+      "status": "待审批"
+    },
+    {
+      "ship": "南海先锋",
+      "partName": "GPS天线接头",
+      "system": "导航",
+      "location": "驾驶台",
+      "qty": "1",
+      "urgency": "高",
+      "reason": "信号不稳定，影响导航精度",
+      "status": "已批准"
+    },
+    {
+      "ship": "东方之珠",
+      "partName": "锚机液压油",
+      "system": "甲板",
+      "location": "首楼间",
+      "qty": "6",
+      "urgency": "低",
+      "reason": "库存补充",
+      "status": "已驳回"
+    },
+    {
+      "ship": "海运之星",
+      "partName": "应急发电机滤芯",
+      "system": "电气",
+      "location": "应急发电机室",
+      "qty": "2",
+      "urgency": "高",
+      "reason": "月度保养到期",
+      "status": "已发放"
+    },
+    {
+      "ship": "长江明珠",
+      "partName": "救生衣示位灯",
+      "system": "消防",
+      "location": "救生甲板",
+      "qty": "15",
+      "urgency": "中",
+      "reason": "部分电池过期",
+      "status": "待审批"
     }
   ],
   "metrics": [
@@ -118,9 +191,9 @@ const appConfig = {
   "filters": [
     {
       "key": "query",
-      "label": "备件/系统",
+      "label": "备件/系统/船舶",
       "type": "search",
-      "match": "`${item.partName}${item.system}${item.location}`.includes(filters.query)"
+      "match": "`${item.ship}${item.partName}${item.system}${item.location}`.includes(filters.query)"
     },
     {
       "key": "status",
@@ -129,11 +202,12 @@ const appConfig = {
     }
   ],
   "cardTitle": "item.partName",
-  "cardMeta": "`${item.system} · ${item.location} · ${item.urgency}紧急`",
-  "cardDetail": "`数量${item.qty}｜${item.reason}`",
+  "cardMeta": "`${item.ship} · ${item.system} · ${item.urgency}紧急`",
+  "cardDetail": "`${item.location} · 数量${item.qty}｜${item.reason}`",
   "history": true,
   "note": "每条申请都能查看简化的状态流转记录。",
   "defaultValues": {
+    "ship": "远洋一号",
     "partName": "海水泵密封圈",
     "system": "机舱",
     "location": "二副库",
@@ -203,6 +277,7 @@ const templateConfig = {
   accent: "#7c3aed",
   fields: [
     { key: "templateName", label: "模板名称", type: "input", placeholder: "例如：海水泵日常维护" },
+    { key: "ship", label: "默认船舶", type: "select", placeholder: "远洋一号", options: ["远洋一号", "海运之星", "长江明珠", "南海先锋", "东方之珠"] },
     { key: "partName", label: "备件名称", type: "input", placeholder: "海水泵密封圈" },
     { key: "system", label: "设备系统", type: "select", placeholder: "机舱", options: ["机舱", "甲板", "电气", "消防", "导航"] },
     { key: "location", label: "默认位置", type: "input", placeholder: "二副库" },
@@ -210,12 +285,13 @@ const templateConfig = {
     { key: "reason", label: "常用申请原因", type: "textarea", placeholder: "巡检发现渗漏，需预防性更换" }
   ],
   seed: [
-    { templateName: "海水泵日常维护", partName: "海水泵密封圈", system: "机舱", location: "二副库", qty: "2", reason: "巡检发现渗漏，需预防性更换" },
-    { templateName: "甲板照明维护", partName: "甲板照明灯泡", system: "电气", location: "甲板库", qty: "12", reason: "夜航照明备货，定期更换" },
-    { templateName: "消防设备检查", partName: "消防水带接口", system: "消防", location: "消防站", qty: "4", reason: "演练后发现老化，需更换" }
+    { templateName: "海水泵日常维护", ship: "远洋一号", partName: "海水泵密封圈", system: "机舱", location: "二副库", qty: "2", reason: "巡检发现渗漏，需预防性更换" },
+    { templateName: "甲板照明维护", ship: "海运之星", partName: "甲板照明灯泡", system: "电气", location: "甲板库", qty: "12", reason: "夜航照明备货，定期更换" },
+    { templateName: "消防设备检查", ship: "长江明珠", partName: "消防水带接口", system: "消防", location: "消防站", qty: "4", reason: "演练后发现老化，需更换" }
   ],
   defaultValues: {
     templateName: "",
+    ship: "远洋一号",
     partName: "",
     system: "机舱",
     location: "",
@@ -238,7 +314,11 @@ function loadRecords() {
   const raw = localStorage.getItem(appConfig.storage);
   if (raw) {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return parsed.map(item => ({
+        ...item,
+        ship: item.ship || appConfig.ships[0]
+      }));
     } catch {
       return withIds(appConfig.seed);
     }
@@ -262,7 +342,11 @@ function loadTemplates() {
   const raw = localStorage.getItem(templateConfig.storage);
   if (raw) {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return parsed.map(item => ({
+        ...item,
+        ship: item.ship || appConfig.ships[0]
+      }));
     } catch {
       return templateConfig.seed.map(item => ({ id: uid(), ...item }));
     }
@@ -295,7 +379,7 @@ function App() {
 
   const [records, setRecords] = useState(loadRecords);
   const [form, setForm] = useState(appConfig.defaultValues);
-  const [filters, setFilters] = useState({ query: '', status: '全部' });
+  const [filters, setFilters] = useState({ query: '', ship: '全部', system: '全部', urgency: '全部', status: '全部' });
   const [selected, setSelected] = useState(null);
 
   const [inventory, setInventory] = useState(loadInventory);
@@ -306,7 +390,13 @@ function App() {
   const [distRecords, setDistRecords] = useState(() => {
     const raw = localStorage.getItem(distConfig.storage);
     if (raw) {
-      try { return JSON.parse(raw); } catch { return []; }
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed.map(item => ({
+          ...item,
+          ship: item.ship || appConfig.ships[0]
+        }));
+      } catch { return []; }
     }
     return [];
   });
@@ -418,6 +508,7 @@ function App() {
     if (template) {
       setForm({
         ...form,
+        ship: template.ship || form.ship,
         partName: template.partName,
         system: template.system,
         location: template.location,
@@ -441,6 +532,7 @@ function App() {
     const distRecord = {
       id: uid(),
       applicationId: distForm.applicationId,
+      ship: application.ship,
       partName: application.partName,
       system: application.system,
       location: application.location,
@@ -469,7 +561,10 @@ function App() {
 
   const filteredRecords = useMemo(() => {
     return records
-      .filter((item) => !filters.query || `${item.partName}${item.system}${item.location}`.includes(filters.query))
+      .filter((item) => !filters.query || `${item.ship}${item.partName}${item.system}${item.location}`.includes(filters.query))
+      .filter((item) => filters.ship === '全部' || item.ship === filters.ship)
+      .filter((item) => filters.system === '全部' || item.system === filters.system)
+      .filter((item) => filters.urgency === '全部' || item.urgency === filters.urgency)
       .filter((item) => filters.status === '全部' || item.status === filters.status)
       .sort((a, b) => {
         if (appConfig.sort === 'priority') {
@@ -489,10 +584,25 @@ function App() {
       .filter((item) => !invFilters.lowStockOnly || isLowStock(item));
   }, [inventory, invFilters]);
 
-  const metrics = [
-    { label: "申请数", value: records.length },
-    { label: "高紧急", value: records.filter((item) => item.urgency === '高').length },
-    { label: "待审批", value: records.filter((item) => item.status === '待审批').length },
+  const shipMetrics = useMemo(() => {
+    return appConfig.ships.map((ship) => {
+      const shipRecords = records.filter((item) => item.ship === ship);
+      return {
+        ship,
+        total: shipRecords.length,
+        pending: shipRecords.filter((item) => item.status === '待审批').length,
+        highUrgency: shipRecords.filter((item) => item.urgency === '高').length,
+        issued: shipRecords.filter((item) => item.status === '已发放').length,
+      };
+    });
+  }, [records]);
+
+  const overallMetrics = [
+    { label: "船舶总数", value: appConfig.ships.length },
+    { label: "申请总数", value: records.length },
+    { label: "待审批总数", value: records.filter((item) => item.status === '待审批').length },
+    { label: "高紧急总数", value: records.filter((item) => item.urgency === '高').length },
+    { label: "已发放总数", value: records.filter((item) => item.status === '已发放').length },
   ];
 
   const invMetrics = [
@@ -588,12 +698,51 @@ function App() {
       {activeTab === 'application' && (
         <>
           <section className="metrics">
-            {metrics.map((metric) => (
+            {overallMetrics.map((metric) => (
               <article className="metric" key={metric.label}>
                 <span>{metric.label}</span>
                 <strong>{metric.value}</strong>
               </article>
             ))}
+          </section>
+
+          <section className="panel ship-dashboard">
+            <div className="panel-title">
+              <Ship size={18} />
+              <h2>船舶申领看板</h2>
+            </div>
+            <div className="ship-grid">
+              {shipMetrics.map((sm) => (
+                <article
+                  className={'ship-card ' + (filters.ship === sm.ship ? 'ship-card-active' : '')}
+                  key={sm.ship}
+                  onClick={() => setFilters({ ...filters, ship: filters.ship === sm.ship ? '全部' : sm.ship })}
+                >
+                  <div className="ship-card-head">
+                    <Ship size={20} />
+                    <h3>{sm.ship}</h3>
+                  </div>
+                  <div className="ship-stats">
+                    <div className="ship-stat">
+                      <span>申请总数</span>
+                      <strong>{sm.total}</strong>
+                    </div>
+                    <div className="ship-stat ship-stat-pending">
+                      <span>待审批</span>
+                      <strong>{sm.pending}</strong>
+                    </div>
+                    <div className="ship-stat ship-stat-urgent">
+                      <span>高紧急</span>
+                      <strong>{sm.highUrgency}</strong>
+                    </div>
+                    <div className="ship-stat ship-stat-issued">
+                      <span>已发放</span>
+                      <strong>{sm.issued}</strong>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
           </section>
 
           <section className="workspace">
@@ -661,17 +810,33 @@ function App() {
               <div className="toolbar">
                 <div className="search">
                   <Search size={16} />
-                  <input value={filters.query} onChange={(event) => setFilters({ ...filters, query: event.target.value })} placeholder={appConfig.filters[0]?.label || '搜索'} />
+                  <input value={filters.query} onChange={(event) => setFilters({ ...filters, query: event.target.value })} placeholder="搜索备件/系统/船舶/位置" />
                 </div>
+                <select value={filters.ship} onChange={(event) => setFilters({ ...filters, ship: event.target.value })}>
+                  <option value="全部">全部船舶</option>
+                  {appConfig.ships.map((ship) => <option key={ship}>{ship}</option>)}
+                </select>
+                <select value={filters.system} onChange={(event) => setFilters({ ...filters, system: event.target.value })}>
+                  <option value="全部">全部系统</option>
+                  {appConfig.fields.find(f => f.key === 'system')?.options.map((sys) => <option key={sys}>{sys}</option>)}
+                </select>
+                <select value={filters.urgency} onChange={(event) => setFilters({ ...filters, urgency: event.target.value })}>
+                  <option value="全部">全部紧急程度</option>
+                  {appConfig.fields.find(f => f.key === 'urgency')?.options.map((u) => <option key={u}>{u}</option>)}
+                </select>
                 <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
-                  <option>全部</option>
+                  <option value="全部">全部状态</option>
                   {appConfig.statuses.map((status) => <option key={status}>{status}</option>)}
                 </select>
               </div>
 
               <div className="records">
                 {filteredRecords.map((item) => (
-                  <article className={'record ' + (item.conflict || hasOverlap(item, records) ? 'conflict' : '')} key={item.id} onClick={() => setSelected(item)}>
+                  <article className={'record record-ship ' + (item.conflict || hasOverlap(item, records) ? 'conflict' : '')} key={item.id} onClick={() => setSelected(item)}>
+                    <div className="record-ship-tag">
+                      <Ship size={13} />
+                      <span>{item.ship}</span>
+                    </div>
                     <div className="record-head">
                       <div>
                         <h3>{item.partName}</h3>
@@ -716,6 +881,10 @@ function App() {
               </div>
               {selected ? (
                 <div className="detail">
+                  <div className="detail-ship-tag">
+                    <Ship size={16} />
+                    <span>{selected.ship}</span>
+                  </div>
                   <h3>{selected.partName}</h3>
                   <p>{`${selected.system} · ${selected.location} · ${selected.urgency}紧急`}</p>
                   <p>{`数量${selected.qty}｜${selected.reason}`}</p>
