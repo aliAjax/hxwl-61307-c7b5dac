@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield } from 'lucide-react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -315,11 +315,15 @@ function loadRecords() {
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      return parsed.map(item => ({
-        ...item,
-        ship: item.ship || appConfig.ships[0],
-        timeline: item.timeline || [{ status: item.status, at: today, by: '系统' }]
-      }));
+      return parsed.map(item => {
+        const dispatched = item.hasBeenDispatched || (item.timeline || []).some((step) => step.status === '已发放');
+        return {
+          ...item,
+          ship: item.ship || appConfig.ships[0],
+          timeline: item.timeline || [{ status: item.status, at: today, by: '系统' }],
+          hasBeenDispatched: dispatched
+        };
+      });
     } catch {
       return withIds(appConfig.seed);
     }
@@ -368,6 +372,10 @@ function priorityRank(value) {
 function hasOverlap(target, records) {
   if (!target.bed || !target.date || !target.start || !target.end) return false;
   return records.some((item) => item.id !== target.id && item.bed === target.bed && item.date === target.date && target.start < item.end && target.end > item.start);
+}
+
+function wasDispatched(item) {
+  return item.hasBeenDispatched || (item.timeline || []).some((step) => step.status === '已发放');
 }
 
 function statusClass(status) {
@@ -470,6 +478,11 @@ function App() {
   }
 
   function updateStatus(id, status) {
+    const item = records.find((r) => r.id === id);
+    if (!item) return;
+    if (wasDispatched(item)) {
+      return;
+    }
     const next = records.map((item) => item.id === id ? {
       ...item,
       status,
@@ -533,6 +546,10 @@ function App() {
   function handleApprove(id) {
     const item = records.find((r) => r.id === id);
     if (!item) return;
+    if (wasDispatched(item)) {
+      setApprovalError('该备件已发放出库，不可重复审批');
+      return;
+    }
     if (item.status !== '待审批') {
       setApprovalError('该申请已处理，无法重复审批');
       return;
@@ -569,6 +586,10 @@ function App() {
   function handleReject(id) {
     const item = records.find((r) => r.id === id);
     if (!item) return;
+    if (wasDispatched(item)) {
+      setApprovalError('该备件已发放出库，不可重复审批');
+      return;
+    }
     if (item.status !== '待审批') {
       setApprovalError('该申请已处理，无法重复审批');
       return;
@@ -609,6 +630,8 @@ function App() {
     if (!distForm.applicationId) return;
     const application = records.find((item) => item.id === distForm.applicationId);
     if (!application) return;
+    if (wasDispatched(application)) return;
+    if (application.status !== '已批准') return;
     const distRecord = {
       id: uid(),
       applicationId: distForm.applicationId,
@@ -628,6 +651,7 @@ function App() {
     const updatedRecords = records.map((item) => item.id === distForm.applicationId ? {
       ...item,
       status: '已发放',
+      hasBeenDispatched: true,
       distribution: distRecord,
       timeline: [...(item.timeline || []), { 
         status: '已发放', 
@@ -642,6 +666,9 @@ function App() {
     persist(updatedRecords);
     if (selected?.id === distForm.applicationId) {
       setSelected(updatedRecords.find((item) => item.id === distForm.applicationId));
+    }
+    if (selectedApproval?.id === distForm.applicationId) {
+      setSelectedApproval(updatedRecords.find((item) => item.id === distForm.applicationId));
     }
     setDistForm({ ...distConfig.defaultValues, applicationId: '' });
     setSelectedDist(distRecord);
@@ -737,7 +764,7 @@ function App() {
 
   const approvalPendingUrgent = useMemo(() => {
     return records
-      .filter((item) => item.status === '待审批' && item.urgency === '高')
+      .filter((item) => item.status === '待审批' && item.urgency === '高' && !wasDispatched(item))
       .filter((item) => !approvalSearch || `${item.ship}${item.partName}${item.system}${item.location}`.includes(approvalSearch))
       .filter((item) => approvalShip === '全部' || item.ship === approvalShip)
       .filter((item) => approvalSystem === '全部' || item.system === approvalSystem)
@@ -750,7 +777,7 @@ function App() {
 
   const approvalPendingNormal = useMemo(() => {
     return records
-      .filter((item) => item.status === '待审批' && item.urgency !== '高')
+      .filter((item) => item.status === '待审批' && item.urgency !== '高' && !wasDispatched(item))
       .filter((item) => !approvalSearch || `${item.ship}${item.partName}${item.system}${item.location}`.includes(approvalSearch))
       .filter((item) => approvalShip === '全部' || item.ship === approvalShip)
       .filter((item) => approvalSystem === '全部' || item.system === approvalSystem)
@@ -763,7 +790,7 @@ function App() {
 
   const approvalProcessed = useMemo(() => {
     return records
-      .filter((item) => item.status !== '待审批')
+      .filter((item) => item.status !== '待审批' || wasDispatched(item))
       .filter((item) => !approvalSearch || `${item.ship}${item.partName}${item.system}${item.location}`.includes(approvalSearch))
       .filter((item) => approvalShip === '全部' || item.ship === approvalShip)
       .filter((item) => approvalSystem === '全部' || item.system === approvalSystem)
@@ -775,9 +802,9 @@ function App() {
   }, [records, approvalSearch, approvalShip, approvalSystem]);
 
   const approvalMetrics = [
-    { label: "待审批总数", value: records.filter((item) => item.status === '待审批').length },
-    { label: "高紧急待审", value: records.filter((item) => item.status === '待审批' && item.urgency === '高').length },
-    { label: "普通待审", value: records.filter((item) => item.status === '待审批' && item.urgency !== '高').length },
+    { label: "待审批总数", value: records.filter((item) => item.status === '待审批' && !wasDispatched(item)).length },
+    { label: "高紧急待审", value: records.filter((item) => item.status === '待审批' && item.urgency === '高' && !wasDispatched(item)).length },
+    { label: "普通待审", value: records.filter((item) => item.status === '待审批' && item.urgency !== '高' && !wasDispatched(item)).length },
     { label: "已审批", value: records.filter((item) => item.status === '已批准').length },
     { label: "已驳回", value: records.filter((item) => item.status === '已驳回').length },
   ];
@@ -988,11 +1015,27 @@ function App() {
                     </div>
                     <p className="record-detail">{`数量${item.qty}｜${item.reason}`}</p>
                     {(item.conflict || hasOverlap(item, records)) && <div className="warning"><AlertTriangle size={15} />发现冲突</div>}
+                    {wasDispatched(item) && (
+                      <div className="dispatched-lock">
+                        <Lock size={14} />
+                        <span>已发放出库，状态不可变更</span>
+                      </div>
+                    )}
                     <div className="actions" onClick={(event) => event.stopPropagation()}>
                       {appConfig.statuses.map((status) => (
-                        <button key={status} type="button" onClick={() => updateStatus(item.id, status)}>{status}</button>
+                        <button
+                          key={status}
+                          type="button"
+                          disabled={wasDispatched(item)}
+                          onClick={() => updateStatus(item.id, status)}
+                        >{status}</button>
                       ))}
-                      <button className="ghost-danger" type="button" onClick={() => removeRecord(item.id)}><Trash2 size={14} /></button>
+                      <button
+                        className="ghost-danger"
+                        type="button"
+                        disabled={wasDispatched(item)}
+                        onClick={() => removeRecord(item.id)}
+                      ><Trash2 size={14} /></button>
                     </div>
                   </article>
                 ))}
@@ -1109,8 +1152,8 @@ function App() {
                 >
                   <AlertTriangle size={14} />
                   高紧急待审
-                  {records.filter((item) => item.status === '待审批' && item.urgency === '高').length > 0 && (
-                    <span className="approval-badge approval-badge-urgent">{records.filter((item) => item.status === '待审批' && item.urgency === '高').length}</span>
+                  {approvalPendingUrgent.length > 0 && (
+                    <span className="approval-badge approval-badge-urgent">{approvalPendingUrgent.length}</span>
                   )}
                 </button>
                 <button
@@ -1119,8 +1162,8 @@ function App() {
                 >
                   <Clock size={14} />
                   普通待审
-                  {records.filter((item) => item.status === '待审批' && item.urgency !== '高').length > 0 && (
-                    <span className="approval-badge approval-badge-normal">{records.filter((item) => item.status === '待审批' && item.urgency !== '高').length}</span>
+                  {approvalPendingNormal.length > 0 && (
+                    <span className="approval-badge approval-badge-normal">{approvalPendingNormal.length}</span>
                   )}
                 </button>
                 <button
@@ -1168,7 +1211,7 @@ function App() {
                       </div>
                     </div>
                     <p className="record-detail">{`需求数量${item.qty}` + (item.approvedQty && item.approvedQty !== item.qty ? ` → 批准数量${item.approvedQty}` : '') + `｜${item.reason}`}</p>
-                    {item.status === '已发放' && (
+                    {wasDispatched(item) && (
                       <div className="approval-dispatched-tag">
                         <Truck size={14} />
                         <span>已发放，不可重复审批</span>
@@ -1180,7 +1223,7 @@ function App() {
                         <span>{item.approvalComment}</span>
                       </div>
                     )}
-                    {item.status === '待审批' && (
+                    {item.status === '待审批' && !wasDispatched(item) && (
                       <div className="approval-actions" onClick={(event) => event.stopPropagation()}>
                         <button
                           className="approval-btn-approve"
@@ -1232,7 +1275,7 @@ function App() {
                   </div>
                   <p>{`申请原因：${selectedApproval.reason}`}</p>
 
-                  {selectedApproval.status === '待审批' ? (
+                  {selectedApproval.status === '待审批' && !wasDispatched(selectedApproval) ? (
                     <div className="approval-form-section">
                       <div className="approval-form-divider">
                         <Edit3 size={14} />
@@ -1294,12 +1337,12 @@ function App() {
                   ) : (
                     <div className="approval-processed-section">
                       <div className="approval-processed-tag">
-                        {selectedApproval.status === '已批准' && <CheckCircle size={18} className="icon-approved" />}
+                        {selectedApproval.status === '已批准' && !wasDispatched(selectedApproval) && <CheckCircle size={18} className="icon-approved" />}
                         {selectedApproval.status === '已驳回' && <XCircle size={18} className="icon-rejected" />}
-                        {selectedApproval.status === '已发放' && <Truck size={18} className="icon-dispatched" />}
-                        <span>{selectedApproval.status}</span>
+                        {(selectedApproval.status === '已发放' || wasDispatched(selectedApproval)) && <Truck size={18} className="icon-dispatched" />}
+                        <span>{wasDispatched(selectedApproval) ? '已发放' : selectedApproval.status}</span>
                       </div>
-                      {selectedApproval.status === '已发放' && (
+                      {wasDispatched(selectedApproval) && (
                         <div className="approval-dispatched-warning">
                           <Shield size={14} />
                           <span>该备件已发放出库，不可重复审批</span>
@@ -1516,7 +1559,7 @@ function App() {
                   >
                     <option value="">-- 请选择 --</option>
                     {records
-                      .filter((item) => item.status === '已批准')
+                      .filter((item) => item.status === '已批准' && !wasDispatched(item))
                       .map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.partName} - {item.system} - 需求{item.qty}

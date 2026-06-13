@@ -867,6 +867,25 @@ textarea { min-height: 76px; resize: vertical; }
   border: 1px solid #fecaca;
 }
 
+.dispatched-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0 0;
+  padding: 6px 10px;
+  background: #f0fdfa;
+  color: #0f766e;
+  border: 1px solid #99f6e4;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .approval-btn-approve {
   display: inline-flex;
   align-items: center;
