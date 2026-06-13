@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw } from 'lucide-react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -331,6 +331,14 @@ const purchaseConfig = {
   seed: []
 };
 
+const trendConfig = {
+  title: "备件需求趋势分析",
+  subtitle: "基于历史申请记录统计备件使用频率、系统分布与紧急程度占比",
+  domain: "数据分析",
+  accent: "#0d9488",
+  topN: 10
+};
+
 const today = new Date().toISOString().slice(0, 10);
 
 function uid() {
@@ -482,6 +490,9 @@ function App() {
   const [purchaseFilters, setPurchaseFilters] = useState({ query: '', status: '全部', ship: '全部' });
   const [selectedPurchase, setSelectedPurchase] = useState(null);
   const [showCreatePurchaseFromApp, setShowCreatePurchaseFromApp] = useState(false);
+
+  const [trendDateRange, setTrendDateRange] = useState({ start: '', end: '' });
+  const [trendSystemFilter, setTrendSystemFilter] = useState('全部');
 
   const [approvalSubTab, setApprovalSubTab] = useState('urgent');
   const [approvalSearch, setApprovalSearch] = useState('');
@@ -1058,16 +1069,117 @@ function App() {
     { label: "已驳回", value: records.filter((item) => item.status === '已驳回').length },
   ];
 
+  const trendFilteredRecords = useMemo(() => {
+    return records.filter((item) => {
+      if (trendSystemFilter !== '全部' && item.system !== trendSystemFilter) {
+        return false;
+      }
+      const createdAt = item.createdAt || '';
+      const hasDate = !!createdAt;
+      if (!hasDate) return true;
+      const dateStr = createdAt.slice(0, 10);
+      if (trendDateRange.start && dateStr < trendDateRange.start) return false;
+      if (trendDateRange.end && dateStr > trendDateRange.end) return false;
+      return true;
+    });
+  }, [records, trendDateRange, trendSystemFilter]);
+
+  const trendNoDateCount = useMemo(() => {
+    return trendFilteredRecords.filter((item) => !item.createdAt).length;
+  }, [trendFilteredRecords]);
+
+  const trendUniqueParts = useMemo(() => {
+    const names = new Set(trendFilteredRecords.map((item) => item.partName).filter(Boolean));
+    return names.size;
+  }, [trendFilteredRecords]);
+
+  const trendTotalQty = useMemo(() => {
+    return trendFilteredRecords.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+  }, [trendFilteredRecords]);
+
+  const trendHighUrgencyPct = useMemo(() => {
+    if (trendFilteredRecords.length === 0) return 0;
+    const highCount = trendFilteredRecords.filter((item) => item.urgency === '高').length;
+    return Math.round((highCount / trendFilteredRecords.length) * 100);
+  }, [trendFilteredRecords]);
+
+  const trendTopParts = useMemo(() => {
+    const map = {};
+    trendFilteredRecords.forEach((item) => {
+      const name = item.partName || '未命名备件';
+      if (!map[name]) {
+        map[name] = { name, system: item.system || '未分类', count: 0, totalQty: 0 };
+      }
+      map[name].count += 1;
+      map[name].totalQty += Number(item.qty) || 0;
+    });
+    return Object.values(map)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, trendConfig.topN);
+  }, [trendFilteredRecords]);
+
+  const trendSystemStats = useMemo(() => {
+    const total = trendFilteredRecords.length;
+    if (total === 0) return [];
+    const map = {};
+    trendFilteredRecords.forEach((item) => {
+      const sys = item.system || '未分类';
+      if (!map[sys]) map[sys] = { name: sys, count: 0 };
+      map[sys].count += 1;
+    });
+    return Object.values(map)
+      .sort((a, b) => b.count - a.count)
+      .map((item) => ({
+        ...item,
+        pct: Math.round((item.count / total) * 100)
+      }));
+  }, [trendFilteredRecords]);
+
+  const trendUrgencyStats = useMemo(() => {
+    const total = trendFilteredRecords.length;
+    if (total === 0) return [];
+    const order = ['高', '中', '低'];
+    const map = {};
+    trendFilteredRecords.forEach((item) => {
+      const urg = item.urgency || '中';
+      if (!map[urg]) map[urg] = { name: urg, count: 0, level: urg === '高' ? 'high' : urg === '中' ? 'medium' : 'low' };
+      map[urg].count += 1;
+    });
+    return order
+      .filter((name) => map[name])
+      .map((name) => ({
+        ...map[name],
+        pct: Math.round((map[name].count / total) * 100)
+      }));
+  }, [trendFilteredRecords]);
+
+  const trendShipStats = useMemo(() => {
+    const total = trendFilteredRecords.length;
+    if (total === 0) return [];
+    const map = {};
+    trendFilteredRecords.forEach((item) => {
+      const ship = item.ship || '未指定';
+      if (!map[ship]) map[ship] = { name: ship, count: 0 };
+      map[ship].count += 1;
+    });
+    return Object.values(map)
+      .sort((a, b) => b.count - a.count)
+      .map((item) => ({
+        ...item,
+        pct: Math.round((item.count / total) * 100)
+      }));
+  }, [trendFilteredRecords]);
+
   return (
-    <main className="shell" style={{ '--accent': activeTab === 'approval' ? '#ea580c' : activeTab === 'inventory' ? inventoryConfig.accent : activeTab === 'distribution' ? distConfig.accent : activeTab === 'templates' ? templateConfig.accent : activeTab === 'purchase' ? purchaseConfig.accent : appConfig.accent }}>
+    <main className="shell" style={{ '--accent': activeTab === 'approval' ? '#ea580c' : activeTab === 'inventory' ? inventoryConfig.accent : activeTab === 'distribution' ? distConfig.accent : activeTab === 'templates' ? templateConfig.accent : activeTab === 'purchase' ? purchaseConfig.accent : activeTab === 'trend' ? trendConfig.accent : appConfig.accent }}>
       <section className="hero">
         <div>
           <div className="eyebrow">
-            {activeTab === 'approval' ? <Gavel size={18} /> : activeTab === 'purchase' ? <ShoppingCart size={18} /> : <Ship size={18} />}
-            {activeTab === 'approval' ? '审批管理' : activeTab === 'inventory' ? inventoryConfig.domain : activeTab === 'distribution' ? distConfig.domain : activeTab === 'templates' ? templateConfig.domain : activeTab === 'purchase' ? purchaseConfig.domain : appConfig.domain}
+            {activeTab === 'approval' ? <Gavel size={18} /> : activeTab === 'purchase' ? <ShoppingCart size={18} /> : activeTab === 'trend' ? <BarChart3 size={18} /> : <Ship size={18} />}
+            {activeTab === 'approval' ? '审批管理' : activeTab === 'inventory' ? inventoryConfig.domain : activeTab === 'distribution' ? distConfig.domain : activeTab === 'templates' ? templateConfig.domain : activeTab === 'purchase' ? purchaseConfig.domain : activeTab === 'trend' ? trendConfig.domain : appConfig.domain}
           </div>
-          <h1>{activeTab === 'approval' ? '审批工作台' : activeTab === 'inventory' ? inventoryConfig.title : activeTab === 'distribution' ? distConfig.title : activeTab === 'templates' ? templateConfig.title : activeTab === 'purchase' ? purchaseConfig.title : appConfig.title}</h1>
-          <p>{activeTab === 'approval' ? '集中处理待审批备件申请，支持批准、驳回与调整批准数量' : activeTab === 'inventory' ? inventoryConfig.subtitle : activeTab === 'distribution' ? distConfig.subtitle : activeTab === 'templates' ? templateConfig.subtitle : activeTab === 'purchase' ? purchaseConfig.subtitle : appConfig.subtitle}</p>
+          <h1>{activeTab === 'approval' ? '审批工作台' : activeTab === 'inventory' ? inventoryConfig.title : activeTab === 'distribution' ? distConfig.title : activeTab === 'templates' ? templateConfig.title : activeTab === 'purchase' ? purchaseConfig.title : activeTab === 'trend' ? trendConfig.title : appConfig.title}</h1>
+          <p>{activeTab === 'approval' ? '集中处理待审批备件申请，支持批准、驳回与调整批准数量' : activeTab === 'inventory' ? inventoryConfig.subtitle : activeTab === 'distribution' ? distConfig.subtitle : activeTab === 'templates' ? templateConfig.subtitle : activeTab === 'purchase' ? purchaseConfig.subtitle : activeTab === 'trend' ? trendConfig.subtitle : appConfig.subtitle}</p>
         </div>
         <div className="port-card">
           <span>Local Port</span>
@@ -1117,6 +1229,13 @@ function App() {
         >
           <ShoppingCart size={16} />
           采购跟踪
+        </button>
+        <button
+          className={'tab ' + (activeTab === 'trend' ? 'tab-active' : '')}
+          onClick={() => setActiveTab('trend')}
+        >
+          <BarChart3 size={16} />
+          需求趋势
         </button>
       </div>
 
@@ -2596,6 +2715,204 @@ function App() {
                 <p className="empty">点击任意采购任务查看详情。</p>
               )}
             </aside>
+          </section>
+        </>
+      )}
+
+      {activeTab === 'trend' && (
+        <>
+          <section className="metrics">
+            <article className="metric">
+              <span>申请总数</span>
+              <strong>{trendFilteredRecords.length}</strong>
+            </article>
+            <article className="metric">
+              <span>涉及备件种类</span>
+              <strong>{trendUniqueParts}</strong>
+            </article>
+            <article className="metric">
+              <span>高紧急占比</span>
+              <strong>{trendHighUrgencyPct}%</strong>
+            </article>
+            <article className="metric">
+              <span>需求总数量</span>
+              <strong>{trendTotalQty}</strong>
+            </article>
+            <article className="metric">
+              <span>无日期记录</span>
+              <strong style={{ color: trendNoDateCount > 0 ? '#f59e0b' : '#10b981' }}>{trendNoDateCount}</strong>
+            </article>
+          </section>
+
+          <section className="panel trend-filter-panel">
+            <div className="panel-title">
+              <CalendarDays size={18} />
+              <h2>筛选条件</h2>
+            </div>
+            <div className="trend-filter-row">
+              <div className="trend-filter-item">
+                <label>开始日期</label>
+                <input
+                  type="date"
+                  value={trendDateRange.start}
+                  onChange={(e) => setTrendDateRange({ ...trendDateRange, start: e.target.value })}
+                />
+              </div>
+              <div className="trend-filter-item">
+                <label>结束日期</label>
+                <input
+                  type="date"
+                  value={trendDateRange.end}
+                  onChange={(e) => setTrendDateRange({ ...trendDateRange, end: e.target.value })}
+                />
+              </div>
+              <div className="trend-filter-item">
+                <label>设备系统</label>
+                <select
+                  value={trendSystemFilter}
+                  onChange={(e) => setTrendSystemFilter(e.target.value)}
+                >
+                  <option value="全部">全部系统</option>
+                  {appConfig.fields.find(f => f.key === 'system')?.options.map(sys => (
+                    <option key={sys} value={sys}>{sys}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="trend-filter-item trend-filter-actions">
+                <button
+                  className="primary"
+                  style={{ marginTop: '22px', padding: '10px 20px' }}
+                  onClick={() => {
+                    setTrendDateRange({ start: '', end: '' });
+                    setTrendSystemFilter('全部');
+                  }}
+                >
+                  <RefreshCw size={14} />重置
+                </button>
+              </div>
+            </div>
+            {trendNoDateCount > 0 && (
+              <p className="trend-date-hint">
+                <AlertTriangle size={14} />
+                检测到 {trendNoDateCount} 条历史记录无创建日期，已全部纳入统计。
+              </p>
+            )}
+          </section>
+
+          <section className="trend-grid">
+            <div className="panel">
+              <div className="panel-title">
+                <TrendingUp size={18} />
+                <h2>Top {trendConfig.topN} 备件申请排行</h2>
+              </div>
+              {trendTopParts.length === 0 ? (
+                <p className="empty">暂无数据</p>
+              ) : (
+                <div className="trend-top-list">
+                  {trendTopParts.map((item, index) => (
+                    <div key={item.name} className="trend-top-item">
+                      <span className={'trend-top-rank ' + (index < 3 ? 'trend-top-rank-high' : '')}>
+                        {index + 1}
+                      </span>
+                      <div className="trend-top-info">
+                        <div className="trend-top-name">{item.name}</div>
+                        <div className="trend-top-meta">{item.system} · {item.count}次申请 · 共{item.totalQty}件</div>
+                      </div>
+                      <div className="trend-top-bar-wrap">
+                        <div
+                          className="trend-top-bar"
+                          style={{ width: `${(item.count / trendTopParts[0].count) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="panel">
+              <div className="panel-title">
+                <PieChart size={18} />
+                <h2>系统分布</h2>
+              </div>
+              {trendSystemStats.length === 0 ? (
+                <p className="empty">暂无数据</p>
+              ) : (
+                <div className="trend-system-list">
+                  {trendSystemStats.map((item) => (
+                    <div key={item.name} className="trend-system-item">
+                      <div className="trend-system-head">
+                        <span className="trend-system-name">{item.name}</span>
+                        <span className="trend-system-count">{item.count}次 ({item.pct}%)</span>
+                      </div>
+                      <div className="trend-system-bar-wrap">
+                        <div
+                          className="trend-system-bar"
+                          style={{ width: `${item.pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="trend-grid">
+            <div className="panel">
+              <div className="panel-title">
+                <Zap size={18} />
+                <h2>紧急程度分布</h2>
+              </div>
+              {trendUrgencyStats.length === 0 ? (
+                <p className="empty">暂无数据</p>
+              ) : (
+                <div className="trend-urgency-list">
+                  {trendUrgencyStats.map((item) => (
+                    <div key={item.name} className="trend-urgency-item">
+                      <div className="trend-urgency-head">
+                        <span className={'trend-urgency-dot trend-urgency-' + item.level} />
+                        <span className="trend-urgency-name">{item.name}</span>
+                        <span className="trend-urgency-count">{item.count}次 ({item.pct}%)</span>
+                      </div>
+                      <div className="trend-urgency-bar-wrap">
+                        <div
+                          className={'trend-urgency-bar trend-urgency-bar-' + item.level}
+                          style={{ width: `${item.pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="panel">
+              <div className="panel-title">
+                <Ship size={18} />
+                <h2>船舶申请分布</h2>
+              </div>
+              {trendShipStats.length === 0 ? (
+                <p className="empty">暂无数据</p>
+              ) : (
+                <div className="trend-ship-list">
+                  {trendShipStats.map((item) => (
+                    <div key={item.name} className="trend-ship-item">
+                      <div className="trend-ship-head">
+                        <span className="trend-ship-name">{item.name}</span>
+                        <span className="trend-ship-count">{item.count}次 ({item.pct}%)</span>
+                      </div>
+                      <div className="trend-ship-bar-wrap">
+                        <div
+                          className="trend-ship-bar"
+                          style={{ width: `${item.pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
         </>
       )}
