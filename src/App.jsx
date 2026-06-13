@@ -212,7 +212,7 @@ function loadInventory() {
 function isLowStock(item) {
   const current = Number(item.currentStock);
   const safety = Number(item.safetyStock);
-  return Number.isFinite(current) && Number.isFinite(safety) && current <= safety;
+  return Number.isFinite(current) && Number.isFinite(safety) && current < safety;
 }
 
 function priorityRank(value) {
