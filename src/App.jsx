@@ -503,6 +503,38 @@ function App() {
     localStorage.setItem(inventoryConfig.storage, JSON.stringify(next));
   }
 
+  function findInventoryItem(application) {
+    if (!application) return null;
+    return inventory.find((inv) =>
+      inv.partName === application.partName &&
+      inv.system === application.system &&
+      inv.location === application.location
+    );
+  }
+
+  function needsPurchase(application) {
+    if (!application) return false;
+    const inv = findInventoryItem(application);
+    if (!inv) return true;
+    const requiredQty = Number(application.approvedQty || application.qty || 0);
+    const currentStock = Number(inv.currentStock || 0);
+    const safetyStock = Number(inv.safetyStock || 0);
+    return currentStock < requiredQty || currentStock < safetyStock;
+  }
+
+  function getInventoryStatus(application) {
+    if (!application) return { lowStock: false, stockInfo: null };
+    const inv = findInventoryItem(application);
+    if (!inv) {
+      return { lowStock: true, stockInfo: null, noRecord: true };
+    }
+    const requiredQty = Number(application.approvedQty || application.qty || 0);
+    const currentStock = Number(inv.currentStock || 0);
+    const safetyStock = Number(inv.safetyStock || 0);
+    const lowStock = currentStock < requiredQty || currentStock < safetyStock;
+    return { lowStock, stockInfo: inv, requiredQty, currentStock, safetyStock, noRecord: false };
+  }
+
   function addRecord(event) {
     event.preventDefault();
     const nextRecord = {
@@ -584,6 +616,10 @@ function App() {
     if (!purchaseForm.applicationId) return;
     const application = records.find((item) => item.id === purchaseForm.applicationId);
     if (!application) return;
+    if (!needsPurchase(application)) {
+      alert('该申请库存充足，无需创建采购任务。');
+      return;
+    }
     const purchaseRecord = {
       id: uid(),
       applicationId: purchaseForm.applicationId,
@@ -1367,27 +1403,72 @@ function App() {
                           </div>
                         )}
 
-                        {!showCreatePurchaseFromApp
-                          ? (selected.status === '已批准' && !wasDispatched(selected) && (
-                            <div className="purchase-create-entry">
-                              <button
-                                className="primary"
-                                type="button"
-                                onClick={() => {
-                                  setPurchaseForm({
-                                    ...purchaseConfig.defaultValues,
-                                    applicationId: selected.id,
-                                    purchaseQty: selected.approvedQty || selected.qty
-                                  });
-                                  setShowCreatePurchaseFromApp(true);
-                                }}
-                              >
-                                <ShoppingCart size={14} />
-                                创建采购任务
-                              </button>
-                            </div>
-                          ))
-                          : (
+                        {(() => {
+                          const invStatus = getInventoryStatus(selected);
+                          const canCreatePurchase = selected.status === '已批准' && !wasDispatched(selected) && invStatus.lowStock;
+                          if (!showCreatePurchaseFromApp) {
+                            if (selected.status === '已批准' && !wasDispatched(selected)) {
+                              return (
+                                <>
+                                  <div className="purchase-create-entry">
+                                    <div className="dist-app-preview purchase-app-preview" style={{ borderColor: invStatus.lowStock ? '#f59e0b' : '#10b981', marginBottom: '10px' }}>
+                                      <span className="dist-app-label">库存状态</span>
+                                      {invStatus.noRecord ? (
+                                        <span style={{ color: '#f59e0b' }}>⚠ 无库存记录，建议采购</span>
+                                      ) : (
+                                        <span>
+                                          当前库存 <strong style={{ color: invStatus.lowStock ? '#f59e0b' : '#10b981' }}>{invStatus.currentStock}</strong>
+                                          {invStatus.requiredQty > 0 && <> / 需求 {invStatus.requiredQty}</>}
+                                          {invStatus.safetyStock > 0 && <> / 安全库存 {invStatus.safetyStock}</>}
+                                          {invStatus.lowStock && <span style={{ color: '#f59e0b', marginLeft: '8px' }}>⚠ 库存不足</span>}
+                                          {!invStatus.lowStock && <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ 库存充足</span>}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {canCreatePurchase && (
+                                      <button
+                                        className="primary"
+                                        type="button"
+                                        onClick={() => {
+                                          setPurchaseForm({
+                                            ...purchaseConfig.defaultValues,
+                                            applicationId: selected.id,
+                                            purchaseQty: selected.approvedQty || selected.qty
+                                          });
+                                          setShowCreatePurchaseFromApp(true);
+                                        }}
+                                      >
+                                        <ShoppingCart size={14} />
+                                        创建采购任务
+                                      </button>
+                                    )}
+                                    {!canCreatePurchase && (
+                                      <p className="hint" style={{ marginTop: '4px' }}>当前库存充足，可直接发放备件，无需采购。</p>
+                                    )}
+                                  </div>
+                                </>
+                              );
+                            }
+                            return null;
+                          }
+                          if (!invStatus.lowStock) {
+                            return (
+                              <div className="purchase-create-entry">
+                                <div className="dist-app-preview purchase-app-preview" style={{ borderColor: '#10b981', marginBottom: '10px' }}>
+                                  <span className="dist-app-label">库存状态</span>
+                                  <span style={{ color: '#10b981' }}>✓ 当前库存充足，无需采购</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="purchase-form-cancel"
+                                  onClick={() => setShowCreatePurchaseFromApp(false)}
+                                >
+                                  返回
+                                </button>
+                              </div>
+                            );
+                          }
+                          return (
                             <form className="purchase-create-form" onSubmit={addPurchase}>
                               <div className="dist-section-title purchase-section-title">
                                 <ShoppingCart size={15} />
@@ -1434,7 +1515,7 @@ function App() {
                                 </label>
                               </div>
                               <div className="purchase-form-actions">
-                                <button className="primary" type="submit" disabled={!purchaseForm.supplier}>
+                                <button className="primary" type="submit" disabled={!purchaseForm.supplier || !invStatus.lowStock}>
                                   <Plus size={14} />确认创建
                                 </button>
                                 <button
@@ -1449,8 +1530,8 @@ function App() {
                                 </button>
                               </div>
                             </form>
-                          )
-                        }
+                          );
+                        })()}
                       </>
                     );
                   })()}
@@ -2227,7 +2308,7 @@ function App() {
                   >
                     <option value="">-- 请选择申请 --</option>
                     {records
-                      .filter((item) => item.status === '已批准' && !wasDispatched(item))
+                      .filter((item) => item.status === '已批准' && !wasDispatched(item) && needsPurchase(item))
                       .map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.partName} - {item.ship} - {item.system} - 需求{item.qty}
@@ -2235,14 +2316,40 @@ function App() {
                       ))}
                   </select>
                 </label>
+                {(() => {
+                  const approvedCount = records.filter((item) => item.status === '已批准' && !wasDispatched(item)).length;
+                  const purchasableCount = records.filter((item) => item.status === '已批准' && !wasDispatched(item) && needsPurchase(item)).length;
+                  if (approvedCount > purchasableCount) {
+                    return <p className="hint wide" style={{ marginTop: '-6px' }}>共 {approvedCount} 条已批准申请，其中 {approvedCount - purchasableCount} 条库存充足暂不可创建采购。</p>;
+                  }
+                  return null;
+                })()}
                 {purchaseForm.applicationId && (() => {
                   const app = records.find((item) => item.id === purchaseForm.applicationId);
-                  return app ? (
-                    <div className="wide dist-app-preview purchase-app-preview">
-                      <span className="dist-app-label">申请信息</span>
-                      <span>{app.partName} | {app.ship} · {app.system} · {app.location} | 需求{app.qty} | {app.urgency}紧急</span>
-                    </div>
-                  ) : null;
+                  if (!app) return null;
+                  const invStatus = getInventoryStatus(app);
+                  return (
+                    <>
+                      <div className="wide dist-app-preview purchase-app-preview">
+                        <span className="dist-app-label">申请信息</span>
+                        <span>{app.partName} | {app.ship} · {app.system} · {app.location} | 需求{app.qty} | {app.urgency}紧急</span>
+                      </div>
+                      <div className="wide dist-app-preview purchase-app-preview" style={{ borderColor: invStatus.lowStock ? '#f59e0b' : '#10b981' }}>
+                        <span className="dist-app-label">库存状态</span>
+                        {invStatus.noRecord ? (
+                          <span style={{ color: '#f59e0b' }}>⚠ 无库存记录，需采购</span>
+                        ) : (
+                          <span>
+                            当前库存 <strong style={{ color: invStatus.lowStock ? '#f59e0b' : '#10b981' }}>{invStatus.currentStock}</strong>
+                            {invStatus.requiredQty > 0 && <> / 需求 {invStatus.requiredQty}</>}
+                            {invStatus.safetyStock > 0 && <> / 安全库存 {invStatus.safetyStock}</>}
+                            {invStatus.lowStock && <span style={{ color: '#f59e0b', marginLeft: '8px' }}>⚠ 库存不足</span>}
+                            {!invStatus.lowStock && <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ 库存充足</span>}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  );
                 })()}
                 <label className="wide">
                   <span>供应商</span>
