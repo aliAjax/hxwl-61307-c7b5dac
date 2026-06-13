@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft } from 'lucide-react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -317,7 +317,8 @@ function loadRecords() {
       const parsed = JSON.parse(raw);
       return parsed.map(item => ({
         ...item,
-        ship: item.ship || appConfig.ships[0]
+        ship: item.ship || appConfig.ships[0],
+        timeline: item.timeline || [{ status: item.status, at: today, by: '系统' }]
       }));
     } catch {
       return withIds(appConfig.seed);
@@ -408,6 +409,16 @@ function App() {
   const [templateFilters, setTemplateFilters] = useState({ query: '', system: '全部' });
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [selectedApplyTemplate, setSelectedApplyTemplate] = useState('');
+
+  const [approvalSubTab, setApprovalSubTab] = useState('urgent');
+  const [approvalSearch, setApprovalSearch] = useState('');
+  const [approvalShip, setApprovalShip] = useState('全部');
+  const [approvalSystem, setApprovalSystem] = useState('全部');
+  const [approvalComment, setApprovalComment] = useState('');
+  const [approvalQty, setApprovalQty] = useState('');
+  const [approvalRole, setApprovalRole] = useState('轮机长');
+  const [selectedApproval, setSelectedApproval] = useState(null);
+  const [approvalError, setApprovalError] = useState('');
 
   function persist(next) {
     setRecords(next);
@@ -519,6 +530,75 @@ function App() {
     setSelectedApplyTemplate('');
   }
 
+  function handleApprove(id) {
+    const item = records.find((r) => r.id === id);
+    if (!item) return;
+    if (item.status !== '待审批') {
+      setApprovalError('该申请已处理，无法重复审批');
+      return;
+    }
+    const approvedQty = approvalQty ? Number(approvalQty) : Number(item.qty);
+    if (!Number.isFinite(approvedQty) || approvedQty <= 0) {
+      setApprovalError('批准数量必须大于0');
+      return;
+    }
+    const timelineEntry = {
+      status: '已批准',
+      at: new Date().toISOString().slice(0, 10),
+      by: approvalRole,
+      comment: approvalComment || '',
+      approvedQty: String(approvedQty),
+      action: 'approve'
+    };
+    const next = records.map((r) => r.id === id ? {
+      ...r,
+      status: '已批准',
+      approvedQty: String(approvedQty),
+      approvalComment: approvalComment || '',
+      timeline: [...(r.timeline || []), timelineEntry]
+    } : r);
+    persist(next);
+    if (selectedApproval?.id === id) {
+      setSelectedApproval(next.find((r) => r.id === id));
+    }
+    setApprovalComment('');
+    setApprovalQty('');
+    setApprovalError('');
+  }
+
+  function handleReject(id) {
+    const item = records.find((r) => r.id === id);
+    if (!item) return;
+    if (item.status !== '待审批') {
+      setApprovalError('该申请已处理，无法重复审批');
+      return;
+    }
+    if (!approvalComment.trim()) {
+      setApprovalError('驳回时必须填写审批意见');
+      return;
+    }
+    const timelineEntry = {
+      status: '已驳回',
+      at: new Date().toISOString().slice(0, 10),
+      by: approvalRole,
+      comment: approvalComment,
+      action: 'reject'
+    };
+    const next = records.map((r) => r.id === id ? {
+      ...r,
+      status: '已驳回',
+      approvalComment: approvalComment,
+      timeline: [...(r.timeline || []), timelineEntry]
+    } : r);
+    persist(next);
+    if (selectedApproval?.id === id) {
+      setSelectedApproval(next.find((r) => r.id === id));
+    }
+    setApprovalComment('');
+    setApprovalQty('');
+    setApprovalError('');
+  }
+
   function persistDist(next) {
     setDistRecords(next);
     localStorage.setItem(distConfig.storage, JSON.stringify(next));
@@ -549,7 +629,15 @@ function App() {
       ...item,
       status: '已发放',
       distribution: distRecord,
-      timeline: [...(item.timeline || []), { status: '已发放', at: today, by: distForm.distributor || '操作员' }]
+      timeline: [...(item.timeline || []), { 
+        status: '已发放', 
+        at: today, 
+        by: distForm.distributor || '操作员',
+        distQty: distForm.distQty,
+        receiver: distForm.receiver || '',
+        comment: distForm.distNote || '',
+        action: 'dispatch'
+      }]
     } : item);
     persist(updatedRecords);
     if (selected?.id === distForm.applicationId) {
@@ -647,16 +735,63 @@ function App() {
     }, {});
   }, [filteredTemplates]);
 
+  const approvalPendingUrgent = useMemo(() => {
+    return records
+      .filter((item) => item.status === '待审批' && item.urgency === '高')
+      .filter((item) => !approvalSearch || `${item.ship}${item.partName}${item.system}${item.location}`.includes(approvalSearch))
+      .filter((item) => approvalShip === '全部' || item.ship === approvalShip)
+      .filter((item) => approvalSystem === '全部' || item.system === approvalSystem)
+      .sort((a, b) => {
+        const dateA = a.createdAt || '';
+        const dateB = b.createdAt || '';
+        return String(dateB).localeCompare(String(dateA));
+      });
+  }, [records, approvalSearch, approvalShip, approvalSystem]);
+
+  const approvalPendingNormal = useMemo(() => {
+    return records
+      .filter((item) => item.status === '待审批' && item.urgency !== '高')
+      .filter((item) => !approvalSearch || `${item.ship}${item.partName}${item.system}${item.location}`.includes(approvalSearch))
+      .filter((item) => approvalShip === '全部' || item.ship === approvalShip)
+      .filter((item) => approvalSystem === '全部' || item.system === approvalSystem)
+      .sort((a, b) => {
+        const dateA = a.createdAt || '';
+        const dateB = b.createdAt || '';
+        return String(dateB).localeCompare(String(dateA));
+      });
+  }, [records, approvalSearch, approvalShip, approvalSystem]);
+
+  const approvalProcessed = useMemo(() => {
+    return records
+      .filter((item) => item.status !== '待审批')
+      .filter((item) => !approvalSearch || `${item.ship}${item.partName}${item.system}${item.location}`.includes(approvalSearch))
+      .filter((item) => approvalShip === '全部' || item.ship === approvalShip)
+      .filter((item) => approvalSystem === '全部' || item.system === approvalSystem)
+      .sort((a, b) => {
+        const dateA = a.createdAt || '';
+        const dateB = b.createdAt || '';
+        return String(dateB).localeCompare(String(dateA));
+      });
+  }, [records, approvalSearch, approvalShip, approvalSystem]);
+
+  const approvalMetrics = [
+    { label: "待审批总数", value: records.filter((item) => item.status === '待审批').length },
+    { label: "高紧急待审", value: records.filter((item) => item.status === '待审批' && item.urgency === '高').length },
+    { label: "普通待审", value: records.filter((item) => item.status === '待审批' && item.urgency !== '高').length },
+    { label: "已审批", value: records.filter((item) => item.status === '已批准').length },
+    { label: "已驳回", value: records.filter((item) => item.status === '已驳回').length },
+  ];
+
   return (
-    <main className="shell" style={{ '--accent': activeTab === 'inventory' ? inventoryConfig.accent : activeTab === 'distribution' ? distConfig.accent : activeTab === 'templates' ? templateConfig.accent : appConfig.accent }}>
+    <main className="shell" style={{ '--accent': activeTab === 'approval' ? '#ea580c' : activeTab === 'inventory' ? inventoryConfig.accent : activeTab === 'distribution' ? distConfig.accent : activeTab === 'templates' ? templateConfig.accent : appConfig.accent }}>
       <section className="hero">
         <div>
           <div className="eyebrow">
-            <Ship size={18} />
-            {activeTab === 'inventory' ? inventoryConfig.domain : activeTab === 'distribution' ? distConfig.domain : activeTab === 'templates' ? templateConfig.domain : appConfig.domain}
+            {activeTab === 'approval' ? <Gavel size={18} /> : <Ship size={18} />}
+            {activeTab === 'approval' ? '审批管理' : activeTab === 'inventory' ? inventoryConfig.domain : activeTab === 'distribution' ? distConfig.domain : activeTab === 'templates' ? templateConfig.domain : appConfig.domain}
           </div>
-          <h1>{activeTab === 'inventory' ? inventoryConfig.title : activeTab === 'distribution' ? distConfig.title : activeTab === 'templates' ? templateConfig.title : appConfig.title}</h1>
-          <p>{activeTab === 'inventory' ? inventoryConfig.subtitle : activeTab === 'distribution' ? distConfig.subtitle : activeTab === 'templates' ? templateConfig.subtitle : appConfig.subtitle}</p>
+          <h1>{activeTab === 'approval' ? '审批工作台' : activeTab === 'inventory' ? inventoryConfig.title : activeTab === 'distribution' ? distConfig.title : activeTab === 'templates' ? templateConfig.title : appConfig.title}</h1>
+          <p>{activeTab === 'approval' ? '集中处理待审批备件申请，支持批准、驳回与调整批准数量' : activeTab === 'inventory' ? inventoryConfig.subtitle : activeTab === 'distribution' ? distConfig.subtitle : activeTab === 'templates' ? templateConfig.subtitle : appConfig.subtitle}</p>
         </div>
         <div className="port-card">
           <span>Local Port</span>
@@ -671,6 +806,13 @@ function App() {
         >
           <ListTodo size={16} />
           申请列表
+        </button>
+        <button
+          className={'tab ' + (activeTab === 'approval' ? 'tab-active' : '')}
+          onClick={() => setActiveTab('approval')}
+        >
+          <Gavel size={16} />
+          审批工作台
         </button>
         <button
           className={'tab ' + (activeTab === 'inventory' ? 'tab-active' : '')}
@@ -926,6 +1068,280 @@ function App() {
                 </div>
               ) : (
                 <p className="empty">点击任意记录查看详情和状态流转。</p>
+              )}
+            </aside>
+          </section>
+        </>
+      )}
+
+      {activeTab === 'approval' && (
+        <>
+          <section className="metrics">
+            {approvalMetrics.map((metric) => (
+              <article className="metric" key={metric.label}>
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+              </article>
+            ))}
+          </section>
+
+          <section className="workspace approval-workspace">
+            <section className="panel approval-list-panel">
+              <div className="toolbar">
+                <div className="search">
+                  <Search size={16} />
+                  <input value={approvalSearch} onChange={(event) => setApprovalSearch(event.target.value)} placeholder="搜索备件/系统/船舶/位置" />
+                </div>
+                <select value={approvalShip} onChange={(event) => setApprovalShip(event.target.value)}>
+                  <option value="全部">全部船舶</option>
+                  {appConfig.ships.map((ship) => <option key={ship}>{ship}</option>)}
+                </select>
+                <select value={approvalSystem} onChange={(event) => setApprovalSystem(event.target.value)}>
+                  <option value="全部">全部系统</option>
+                  {appConfig.fields.find(f => f.key === 'system')?.options.map((sys) => <option key={sys}>{sys}</option>)}
+                </select>
+              </div>
+
+              <div className="approval-sub-tabs">
+                <button
+                  className={'approval-sub-tab ' + (approvalSubTab === 'urgent' ? 'approval-sub-tab-active' : '')}
+                  onClick={() => setApprovalSubTab('urgent')}
+                >
+                  <AlertTriangle size={14} />
+                  高紧急待审
+                  {records.filter((item) => item.status === '待审批' && item.urgency === '高').length > 0 && (
+                    <span className="approval-badge approval-badge-urgent">{records.filter((item) => item.status === '待审批' && item.urgency === '高').length}</span>
+                  )}
+                </button>
+                <button
+                  className={'approval-sub-tab ' + (approvalSubTab === 'normal' ? 'approval-sub-tab-active' : '')}
+                  onClick={() => setApprovalSubTab('normal')}
+                >
+                  <Clock size={14} />
+                  普通待审
+                  {records.filter((item) => item.status === '待审批' && item.urgency !== '高').length > 0 && (
+                    <span className="approval-badge approval-badge-normal">{records.filter((item) => item.status === '待审批' && item.urgency !== '高').length}</span>
+                  )}
+                </button>
+                <button
+                  className={'approval-sub-tab ' + (approvalSubTab === 'processed' ? 'approval-sub-tab-active' : '')}
+                  onClick={() => setApprovalSubTab('processed')}
+                >
+                  <Shield size={14} />
+                  已处理
+                </button>
+              </div>
+
+              <div className="records">
+                {approvalSubTab === 'urgent' && approvalPendingUrgent.length === 0 && (
+                  <p className="empty">暂无高紧急待审批申请。</p>
+                )}
+                {approvalSubTab === 'normal' && approvalPendingNormal.length === 0 && (
+                  <p className="empty">暂无普通待审批申请。</p>
+                )}
+                {approvalSubTab === 'processed' && approvalProcessed.length === 0 && (
+                  <p className="empty">暂无已处理记录。</p>
+                )}
+                {(approvalSubTab === 'urgent' ? approvalPendingUrgent : approvalSubTab === 'normal' ? approvalPendingNormal : approvalProcessed).map((item) => (
+                  <article
+                    className={'record approval-record ' + (item.urgency === '高' ? 'approval-record-urgent' : '') + (item.status === '已批准' ? ' approval-record-approved' : '') + (item.status === '已驳回' ? ' approval-record-rejected' : '') + (item.status === '已发放' ? ' approval-record-dispatched' : '')}
+                    key={item.id}
+                    onClick={() => { setSelectedApproval(item); setApprovalQty(''); setApprovalComment(''); setApprovalError(''); }}
+                  >
+                    <div className="record-ship-tag">
+                      <Ship size={13} />
+                      <span>{item.ship}</span>
+                    </div>
+                    <div className="record-head">
+                      <div>
+                        <h3>{item.partName}</h3>
+                        <p>{`${item.system} · ${item.location} · ${item.urgency}紧急`}</p>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+                        {item.urgency === '高' && (
+                          <span className="urgency-tag urgency-high">
+                            <AlertTriangle size={12} />
+                            高紧急
+                          </span>
+                        )}
+                        <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                      </div>
+                    </div>
+                    <p className="record-detail">{`需求数量${item.qty}` + (item.approvedQty && item.approvedQty !== item.qty ? ` → 批准数量${item.approvedQty}` : '') + `｜${item.reason}`}</p>
+                    {item.status === '已发放' && (
+                      <div className="approval-dispatched-tag">
+                        <Truck size={14} />
+                        <span>已发放，不可重复审批</span>
+                      </div>
+                    )}
+                    {item.approvalComment && (
+                      <div className="approval-comment-preview">
+                        <MessageSquare size={13} />
+                        <span>{item.approvalComment}</span>
+                      </div>
+                    )}
+                    {item.status === '待审批' && (
+                      <div className="approval-actions" onClick={(event) => event.stopPropagation()}>
+                        <button
+                          className="approval-btn-approve"
+                          type="button"
+                          onClick={() => handleApprove(item.id)}
+                        >
+                          <CheckCircle size={14} />
+                          批准
+                        </button>
+                        <button
+                          className="approval-btn-reject"
+                          type="button"
+                          onClick={() => handleReject(item.id)}
+                        >
+                          <XCircle size={14} />
+                          驳回
+                        </button>
+                      </div>
+                    )}
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <aside className="panel approval-detail-panel">
+              <div className="panel-title">
+                <Gavel size={18} />
+                <h2>审批操作</h2>
+              </div>
+              {selectedApproval ? (
+                <div className="detail">
+                  <div className="detail-ship-tag">
+                    <Ship size={16} />
+                    <span>{selectedApproval.ship}</span>
+                  </div>
+                  <h3>{selectedApproval.partName}</h3>
+                  <p>{`${selectedApproval.system} · ${selectedApproval.location} · ${selectedApproval.urgency}紧急`}</p>
+                  <div className="approval-info-grid">
+                    <div className="stock-item">
+                      <span>需求数量</span>
+                      <strong>{selectedApproval.qty}</strong>
+                    </div>
+                    {selectedApproval.approvedQty && (
+                      <div className="stock-item">
+                        <span>批准数量</span>
+                        <strong className="approval-qty-approved">{selectedApproval.approvedQty}</strong>
+                      </div>
+                    )}
+                  </div>
+                  <p>{`申请原因：${selectedApproval.reason}`}</p>
+
+                  {selectedApproval.status === '待审批' ? (
+                    <div className="approval-form-section">
+                      <div className="approval-form-divider">
+                        <Edit3 size={14} />
+                        <span>审批操作</span>
+                      </div>
+                      {approvalError && (
+                        <div className="approval-error">
+                          <AlertTriangle size={14} />
+                          <span>{approvalError}</span>
+                        </div>
+                      )}
+                      <label className="approval-field">
+                        <span>审批角色</span>
+                        <select
+                          value={approvalRole}
+                          onChange={(event) => setApprovalRole(event.target.value)}
+                        >
+                          <option value="轮机长">轮机长</option>
+                          <option value="物料管理员">物料管理员</option>
+                        </select>
+                      </label>
+                      <label className="approval-field">
+                        <span>调整批准数量</span>
+                        <input
+                          type="number"
+                          value={approvalQty}
+                          onChange={(event) => setApprovalQty(event.target.value)}
+                          placeholder={`默认批准 ${selectedApproval.qty}`}
+                          min="1"
+                        />
+                      </label>
+                      <label className="approval-field">
+                        <span>审批意见</span>
+                        <textarea
+                          value={approvalComment}
+                          onChange={(event) => setApprovalComment(event.target.value)}
+                          placeholder="填写审批意见（驳回时必填）"
+                        />
+                      </label>
+                      <div className="approval-form-actions">
+                        <button
+                          className="approval-btn-approve-lg"
+                          type="button"
+                          onClick={() => handleApprove(selectedApproval.id)}
+                        >
+                          <CheckCircle size={16} />
+                          批准
+                        </button>
+                        <button
+                          className="approval-btn-reject-lg"
+                          type="button"
+                          onClick={() => handleReject(selectedApproval.id)}
+                        >
+                          <XCircle size={16} />
+                          驳回
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="approval-processed-section">
+                      <div className="approval-processed-tag">
+                        {selectedApproval.status === '已批准' && <CheckCircle size={18} className="icon-approved" />}
+                        {selectedApproval.status === '已驳回' && <XCircle size={18} className="icon-rejected" />}
+                        {selectedApproval.status === '已发放' && <Truck size={18} className="icon-dispatched" />}
+                        <span>{selectedApproval.status}</span>
+                      </div>
+                      {selectedApproval.status === '已发放' && (
+                        <div className="approval-dispatched-warning">
+                          <Shield size={14} />
+                          <span>该备件已发放出库，不可重复审批</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="approval-timeline-section">
+                    <div className="approval-form-divider">
+                      <Clock size={14} />
+                      <span>状态流转时间线</span>
+                    </div>
+                    <div className="approval-timeline">
+                      {(selectedApproval.timeline || []).map((step, index) => (
+                        <div key={index} className={'approval-timeline-item ' + (step.action === 'approve' ? 'timeline-approved' : step.action === 'reject' ? 'timeline-rejected' : step.action === 'dispatch' ? 'timeline-dispatched' : '')}>
+                          <div className="timeline-dot" />
+                          <div className="timeline-content">
+                            <div className="timeline-header">
+                              <strong>{step.status}</strong>
+                              <span className="timeline-meta">{step.at} · {step.by}</span>
+                            </div>
+                            {step.approvedQty && (
+                              <p className="timeline-detail">批准数量: {step.approvedQty}</p>
+                            )}
+                            {step.distQty && (
+                              <p className="timeline-detail">发放数量: {step.distQty}</p>
+                            )}
+                            {step.receiver && (
+                              <p className="timeline-detail">领取人: {step.receiver}</p>
+                            )}
+                            {step.comment && (
+                              <p className="timeline-detail">意见: {step.comment}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="empty">点击左侧待审批申请，进行审批操作。</p>
               )}
             </aside>
           </section>
