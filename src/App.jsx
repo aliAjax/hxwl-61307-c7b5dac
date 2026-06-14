@@ -267,6 +267,7 @@ const inventoryConfig = {
   accent: "#dc2626",
   systems: ["机舱", "甲板", "电气", "消防", "导航"],
   fields: [
+    { key: "ship", label: "所属船舶", type: "select", placeholder: "远洋一号", options: ["远洋一号", "海运之星", "长江明珠", "南海先锋", "东方之珠"] },
     { key: "partName", label: "备件名称", type: "input", placeholder: "海水泵密封圈" },
     { key: "system", label: "设备系统", type: "select", placeholder: "机舱", options: ["机舱", "甲板", "电气", "消防", "导航"] },
     { key: "location", label: "船舶位置", type: "input", placeholder: "二副库" },
@@ -275,12 +276,13 @@ const inventoryConfig = {
     { key: "lastCheckDate", label: "最后盘点日期", type: "date", placeholder: "" }
   ],
   seed: [
-    { partName: "海水泵密封圈", system: "机舱", location: "二副库", currentStock: "3", safetyStock: "5", lastCheckDate: "2026-06-01" },
-    { partName: "甲板照明灯泡", system: "电气", location: "甲板库", currentStock: "20", safetyStock: "10", lastCheckDate: "2026-06-05" },
-    { partName: "消防水带接口", system: "消防", location: "消防站", currentStock: "2", safetyStock: "4", lastCheckDate: "2026-05-28" },
-    { partName: "主机润滑油", system: "机舱", location: "机舱油库", currentStock: "8", safetyStock: "6", lastCheckDate: "2026-06-10" }
+    { ship: "远洋一号", partName: "海水泵密封圈", system: "机舱", location: "二副库", currentStock: "3", safetyStock: "5", lastCheckDate: "2026-06-01" },
+    { ship: "海运之星", partName: "甲板照明灯泡", system: "电气", location: "甲板库", currentStock: "20", safetyStock: "10", lastCheckDate: "2026-06-05" },
+    { ship: "长江明珠", partName: "消防水带接口", system: "消防", location: "消防站", currentStock: "2", safetyStock: "4", lastCheckDate: "2026-05-28" },
+    { ship: "远洋一号", partName: "主机润滑油", system: "机舱", location: "机舱油库", currentStock: "8", safetyStock: "6", lastCheckDate: "2026-06-10" }
   ],
   defaultValues: {
+    ship: "远洋一号",
     partName: "海水泵密封圈",
     system: "机舱",
     location: "二副库",
@@ -415,7 +417,11 @@ function loadInventory() {
   const raw = localStorage.getItem(inventoryConfig.storage);
   if (raw) {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return parsed.map(item => ({
+        ...item,
+        ship: item.ship || appConfig.ships[0]
+      }));
     } catch {
       return inventoryConfig.seed.map(item => ({ id: uid(), ...item }));
     }
@@ -501,7 +507,7 @@ function App() {
 
   const [inventory, setInventory] = useState(loadInventory);
   const [invForm, setInvForm] = useState(inventoryConfig.defaultValues);
-  const [invFilters, setInvFilters] = useState({ query: '', system: '全部', lowStockOnly: false });
+  const [invFilters, setInvFilters] = useState({ query: '', ship: '全部', system: '全部', lowStockOnly: false });
   const [selectedInv, setSelectedInv] = useState(null);
 
   const [distRecords, setDistRecords] = useState(() => {
@@ -903,6 +909,7 @@ function App() {
   function findInventoryItem(application) {
     if (!application) return null;
     return inventory.find((inv) =>
+      inv.ship === application.ship &&
       inv.partName === application.partName &&
       inv.system === application.system &&
       inv.location === application.location
@@ -1354,10 +1361,10 @@ function App() {
     const current = Number(invItem.currentStock) || 0;
     const safety = Number(invItem.safetyStock) || 0;
     const suggestedQty = Math.max(safety - current, 1);
-    const reason = `库存预警：当前库存${current}，低于安全库存${safety}，建议申请补货${suggestedQty}件`;
+    const reason = `${invItem.ship}库存预警：${invItem.partName}当前库存${current}，低于安全库存${safety}，建议申请补货${suggestedQty}件`;
     setForm({
       ...appConfig.defaultValues,
-      ship: appConfig.ships[0],
+      ship: invItem.ship || appConfig.ships[0],
       partName: invItem.partName,
       system: invItem.system,
       location: invItem.location,
@@ -1918,7 +1925,8 @@ function App() {
 
   const filteredInventory = useMemo(() => {
     return inventory
-      .filter((item) => !invFilters.query || `${item.partName}${item.system}${item.location}`.includes(invFilters.query))
+      .filter((item) => !invFilters.query || `${item.ship}${item.partName}${item.system}${item.location}`.includes(invFilters.query))
+      .filter((item) => invFilters.ship === '全部' || item.ship === invFilters.ship)
       .filter((item) => invFilters.system === '全部' || item.system === invFilters.system)
       .filter((item) => !invFilters.lowStockOnly || isLowStock(item));
   }, [inventory, invFilters]);
@@ -3219,8 +3227,12 @@ function App() {
               <div className="toolbar">
                 <div className="search">
                   <Search size={16} />
-                  <input value={invFilters.query} onChange={(event) => setInvFilters({ ...invFilters, query: event.target.value })} placeholder="备件名称/系统/位置" />
+                  <input value={invFilters.query} onChange={(event) => setInvFilters({ ...invFilters, query: event.target.value })} placeholder="船舶/备件/系统/位置" />
                 </div>
+                <select value={invFilters.ship} onChange={(event) => setInvFilters({ ...invFilters, ship: event.target.value })}>
+                  <option>全部</option>
+                  {appConfig.ships.map((ship) => <option key={ship}>{ship}</option>)}
+                </select>
                 <select value={invFilters.system} onChange={(event) => setInvFilters({ ...invFilters, system: event.target.value })}>
                   <option>全部</option>
                   {inventoryConfig.systems.map((sys) => <option key={sys}>{sys}</option>)}
@@ -3236,6 +3248,10 @@ function App() {
                   const low = isLowStock(item);
                   return (
                     <article className={'record ' + (low ? 'low-stock' : '')} key={item.id} onClick={() => setSelectedInv(item)}>
+                      <div className="record-ship-tag">
+                        <Ship size={13} />
+                        <span>{item.ship}</span>
+                      </div>
                       <div className="record-head">
                         <div>
                           <h3>{item.partName}</h3>
@@ -3299,6 +3315,10 @@ function App() {
               </div>
               {selectedInv ? (
                 <div className="detail">
+                  <div className="detail-ship-tag">
+                    <Ship size={16} />
+                    <span>{selectedInv.ship}</span>
+                  </div>
                   <h3>{selectedInv.partName}</h3>
                   <p>{`${selectedInv.system} · ${selectedInv.location}`}</p>
                   <div className="stock-info">
