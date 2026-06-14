@@ -561,6 +561,11 @@ function App() {
   const [approvalRole, setApprovalRole] = useState('轮机长');
   const [selectedApproval, setSelectedApproval] = useState(null);
   const [approvalError, setApprovalError] = useState('');
+  const [selectedApprovalIds, setSelectedApprovalIds] = useState([]);
+  const [showBatchApprovalModal, setShowBatchApprovalModal] = useState(false);
+  const [batchApprovalRole, setBatchApprovalRole] = useState('轮机长');
+  const [batchApprovalComment, setBatchApprovalComment] = useState('');
+  const [batchApprovalError, setBatchApprovalError] = useState('');
 
   const [isOnline, setIsOnline] = useState(() => {
     const meta = loadSyncMeta();
@@ -1851,6 +1856,102 @@ function App() {
     setApprovalError('');
   }
 
+  function handleBatchApprove() {
+    if (selectedApprovalIds.length === 0) {
+      setBatchApprovalError('请至少选择一条待审批记录');
+      return;
+    }
+    const validItems = selectedApprovalIds
+      .map((id) => records.find((r) => r.id === id))
+      .filter((item) => item && item.status === '待审批' && !wasDispatched(item));
+    if (validItems.length === 0) {
+      setBatchApprovalError('选中的记录中没有可审批的有效记录');
+      return;
+    }
+    let nextRecords = [...records];
+    validItems.forEach((item) => {
+      const approvedQty = Number(item.qty);
+      enqueueAndRefresh({
+        type: OP_TYPES.APPROVE,
+        targetId: item.id,
+        payload: {
+          fromStatus: item.status,
+          toStatus: '已批准',
+          by: batchApprovalRole,
+          approvedQty: String(approvedQty),
+          comment: batchApprovalComment || '',
+          partName: item.partName,
+        },
+      });
+      const timelineEntry = {
+        status: '已批准',
+        at: new Date().toISOString().slice(0, 10),
+        by: batchApprovalRole,
+        comment: batchApprovalComment || '',
+        approvedQty: String(approvedQty),
+        action: 'approve'
+      };
+      const updatedItem = {
+        ...item,
+        status: '已批准',
+        approvedQty: String(approvedQty),
+        approvalComment: batchApprovalComment || '',
+        timeline: [...(item.timeline || []), timelineEntry]
+      };
+      nextRecords = nextRecords.map((r) => r.id === item.id ? updatedItem : r);
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.APPROVE,
+        targetType: 'record',
+        targetId: item.id,
+        beforeData: item,
+        afterData: updatedItem,
+        metadata: {
+          approvedQty: String(approvedQty),
+          originalQty: item.qty,
+          comment: batchApprovalComment || '',
+          role: batchApprovalRole,
+          ship: item.ship,
+          partName: item.partName,
+        },
+        operator: batchApprovalRole,
+      });
+    });
+    persist(nextRecords);
+    if (selectedApproval && selectedApprovalIds.includes(selectedApproval.id)) {
+      setSelectedApproval(nextRecords.find((r) => r.id === selectedApproval.id));
+    }
+    setSelectedApprovalIds([]);
+    setShowBatchApprovalModal(false);
+    setBatchApprovalComment('');
+    setBatchApprovalError('');
+  }
+
+  function toggleApprovalSelection(id, item) {
+    if (!item || item.status !== '待审批' || wasDispatched(item)) return;
+    setSelectedApprovalIds((prev) => {
+      if (prev.includes(id)) {
+        return prev.filter((x) => x !== id);
+      }
+      return [...prev, id];
+    });
+  }
+
+  function toggleSelectAllApproval(list) {
+    const validIds = list
+      .filter((item) => item.status === '待审批' && !wasDispatched(item))
+      .map((item) => item.id);
+    const allSelected = validIds.length > 0 && validIds.every((id) => selectedApprovalIds.includes(id));
+    if (allSelected) {
+      setSelectedApprovalIds((prev) => prev.filter((id) => !validIds.includes(id)));
+    } else {
+      setSelectedApprovalIds((prev) => {
+        const newSet = new Set(prev);
+        validIds.forEach((id) => newSet.add(id));
+        return Array.from(newSet);
+      });
+    }
+  }
+
   function persistDist(next) {
     setDistRecords(next);
     localStorage.setItem(distConfig.storage, JSON.stringify(next));
@@ -2980,7 +3081,7 @@ function App() {
               <div className="approval-sub-tabs">
                 <button
                   className={'approval-sub-tab ' + (approvalSubTab === 'urgent' ? 'approval-sub-tab-active' : '')}
-                  onClick={() => setApprovalSubTab('urgent')}
+                  onClick={() => { setApprovalSubTab('urgent'); setSelectedApprovalIds([]); }}
                 >
                   <AlertTriangle size={14} />
                   高紧急待审
@@ -2990,7 +3091,7 @@ function App() {
                 </button>
                 <button
                   className={'approval-sub-tab ' + (approvalSubTab === 'normal' ? 'approval-sub-tab-active' : '')}
-                  onClick={() => setApprovalSubTab('normal')}
+                  onClick={() => { setApprovalSubTab('normal'); setSelectedApprovalIds([]); }}
                 >
                   <Clock size={14} />
                   普通待审
@@ -3000,12 +3101,38 @@ function App() {
                 </button>
                 <button
                   className={'approval-sub-tab ' + (approvalSubTab === 'processed' ? 'approval-sub-tab-active' : '')}
-                  onClick={() => setApprovalSubTab('processed')}
+                  onClick={() => { setApprovalSubTab('processed'); setSelectedApprovalIds([]); }}
                 >
                   <Shield size={14} />
                   已处理
                 </button>
               </div>
+
+              {(approvalSubTab === 'urgent' || approvalSubTab === 'normal') && (
+                <div className="batch-approval-toolbar">
+                  <label className="batch-select-all" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={(approvalSubTab === 'urgent' ? approvalPendingUrgent : approvalPendingNormal).filter(item => item.status === '待审批' && !wasDispatched(item)).length > 0 &&
+                               (approvalSubTab === 'urgent' ? approvalPendingUrgent : approvalPendingNormal).filter(item => item.status === '待审批' && !wasDispatched(item)).every(item => selectedApprovalIds.includes(item.id))}
+                      onChange={() => toggleSelectAllApproval(approvalSubTab === 'urgent' ? approvalPendingUrgent : approvalPendingNormal)}
+                    />
+                    <span>全选</span>
+                  </label>
+                  <div className="batch-info">
+                    <span>已选 {selectedApprovalIds.filter(id => (approvalSubTab === 'urgent' ? approvalPendingUrgent : approvalPendingNormal).some(item => item.id === id)).length} 条</span>
+                  </div>
+                  <button
+                    className="batch-approve-btn"
+                    type="button"
+                    disabled={selectedApprovalIds.filter(id => (approvalSubTab === 'urgent' ? approvalPendingUrgent : approvalPendingNormal).some(item => item.id === id)).length === 0}
+                    onClick={() => { setBatchApprovalRole('轮机长'); setBatchApprovalComment(''); setBatchApprovalError(''); setShowBatchApprovalModal(true); }}
+                  >
+                    <CheckCircle size={14} />
+                    批量批准
+                  </button>
+                </div>
+              )}
 
               <div className="records">
                 {approvalSubTab === 'urgent' && approvalPendingUrgent.length === 0 && (
@@ -3017,67 +3144,172 @@ function App() {
                 {approvalSubTab === 'processed' && approvalProcessed.length === 0 && (
                   <p className="empty">暂无已处理记录。</p>
                 )}
-                {(approvalSubTab === 'urgent' ? approvalPendingUrgent : approvalSubTab === 'normal' ? approvalPendingNormal : approvalProcessed).map((item) => (
-                  <article
-                    className={'record approval-record ' + (item.urgency === '高' ? 'approval-record-urgent' : '') + (item.status === '已批准' ? ' approval-record-approved' : '') + (item.status === '已驳回' ? ' approval-record-rejected' : '') + (item.status === '已发放' ? ' approval-record-dispatched' : '')}
-                    key={item.id}
-                    onClick={() => { setSelectedApproval(item); setApprovalQty(''); setApprovalComment(''); setApprovalError(''); }}
-                  >
-                    <div className="record-ship-tag">
-                      <Ship size={13} />
-                      <span>{item.ship}</span>
-                    </div>
-                    <div className="record-head">
-                      <div>
-                        <h3>{item.partName}</h3>
-                        <p>{`${item.system} · ${item.location} · ${item.urgency}紧急`}</p>
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
-                        {item.urgency === '高' && (
-                          <span className="urgency-tag urgency-high">
-                            <AlertTriangle size={12} />
-                            高紧急
-                          </span>
+                {(approvalSubTab === 'urgent' ? approvalPendingUrgent : approvalSubTab === 'normal' ? approvalPendingNormal : approvalProcessed).map((item) => {
+                  const isSelectable = approvalSubTab !== 'processed' && item.status === '待审批' && !wasDispatched(item);
+                  const isSelected = selectedApprovalIds.includes(item.id);
+                  return (
+                    <article
+                      className={'record approval-record ' + (item.urgency === '高' ? 'approval-record-urgent' : '') + (item.status === '已批准' ? ' approval-record-approved' : '') + (item.status === '已驳回' ? ' approval-record-rejected' : '') + (item.status === '已发放' ? ' approval-record-dispatched' : '') + (isSelected ? ' approval-record-selected' : '') + (!isSelectable && approvalSubTab !== 'processed' ? ' approval-record-unselectable' : '')}
+                      key={item.id}
+                      onClick={() => { if (approvalSubTab !== 'processed' && isSelectable) { toggleApprovalSelection(item.id, item); } setSelectedApproval(item); setApprovalQty(''); setApprovalComment(''); setApprovalError(''); }}
+                    >
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                        {approvalSubTab !== 'processed' && (
+                          <div className="approval-checkbox-wrap" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              className="approval-checkbox"
+                              checked={isSelected}
+                              disabled={!isSelectable}
+                              onChange={() => toggleApprovalSelection(item.id, item)}
+                            />
+                          </div>
                         )}
-                        <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="record-ship-tag">
+                            <Ship size={13} />
+                            <span>{item.ship}</span>
+                          </div>
+                          <div className="record-head">
+                            <div>
+                              <h3>{item.partName}</h3>
+                              <p>{`${item.system} · ${item.location} · ${item.urgency}紧急`}</p>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+                              {item.urgency === '高' && (
+                                <span className="urgency-tag urgency-high">
+                                  <AlertTriangle size={12} />
+                                  高紧急
+                                </span>
+                              )}
+                              <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                            </div>
+                          </div>
+                          <p className="record-detail">{`需求数量${item.qty}` + (item.approvedQty && item.approvedQty !== item.qty ? ` → 批准数量${item.approvedQty}` : '') + `｜${item.reason}`}</p>
+                          {wasDispatched(item) && (
+                            <div className="approval-dispatched-tag">
+                              <Truck size={14} />
+                              <span>已发放，不可重复审批</span>
+                            </div>
+                          )}
+                          {item.approvalComment && (
+                            <div className="approval-comment-preview">
+                              <MessageSquare size={13} />
+                              <span>{item.approvalComment}</span>
+                            </div>
+                          )}
+                          {item.status === '待审批' && !wasDispatched(item) && (
+                            <div className="approval-actions" onClick={(event) => event.stopPropagation()}>
+                              <button
+                                className="approval-btn-approve"
+                                type="button"
+                                onClick={() => handleApprove(item.id)}
+                              >
+                                <CheckCircle size={14} />
+                                批准
+                              </button>
+                              <button
+                                className="approval-btn-reject"
+                                type="button"
+                                onClick={() => handleReject(item.id)}
+                              >
+                                <XCircle size={14} />
+                                驳回
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+
+              {showBatchApprovalModal && (
+                <div className="modal-overlay" onClick={() => setShowBatchApprovalModal(false)}>
+                  <div className="modal batch-approval-modal" onClick={(e) => e.stopPropagation()}>
+                    <div className="modal-header">
+                      <div className="panel-title">
+                        <Gavel size={18} />
+                        <h2>批量审批</h2>
+                      </div>
+                      <button className="modal-close" onClick={() => setShowBatchApprovalModal(false)}>
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div className="modal-body">
+                      <div className="batch-approval-summary">
+                        <Info size={16} />
+                        <span>即将批量批准 <strong>{selectedApprovalIds.length}</strong> 条待审批申请，批准数量将沿用各自的需求数量。</span>
+                      </div>
+                      {batchApprovalError && (
+                        <div className="approval-error">
+                          <AlertTriangle size={14} />
+                          <span>{batchApprovalError}</span>
+                        </div>
+                      )}
+                      <label className="approval-field">
+                        <span>审批角色</span>
+                        <select
+                          value={batchApprovalRole}
+                          onChange={(event) => setBatchApprovalRole(event.target.value)}
+                        >
+                          <option value="轮机长">轮机长</option>
+                          <option value="物料管理员">物料管理员</option>
+                        </select>
+                      </label>
+                      <label className="approval-field">
+                        <span>审批意见</span>
+                        <textarea
+                          value={batchApprovalComment}
+                          onChange={(event) => setBatchApprovalComment(event.target.value)}
+                          placeholder="填写统一审批意见（可选）"
+                        />
+                      </label>
+                      <div className="batch-approval-list">
+                        <div className="batch-approval-list-title">
+                          <ListTodo size={14} />
+                          <span>待审批申请列表（共 {selectedApprovalIds.length} 条）</span>
+                        </div>
+                        <div className="batch-approval-list-items">
+                          {selectedApprovalIds.map((id) => {
+                            const item = records.find((r) => r.id === id);
+                            if (!item) return null;
+                            return (
+                              <div className="batch-approval-item" key={id}>
+                                <div className="batch-approval-item-main">
+                                  <Ship size={13} />
+                                  <span className="batch-approval-item-ship">{item.ship}</span>
+                                  <span className="batch-approval-item-name">{item.partName}</span>
+                                  {item.urgency === '高' && (
+                                    <span className="urgency-tag urgency-high urgency-tag-sm">
+                                      <AlertTriangle size={10} />
+                                      高
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="batch-approval-item-qty">
+                                  <Package size={13} />
+                                  <span>需求数量: {item.qty}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
-                    <p className="record-detail">{`需求数量${item.qty}` + (item.approvedQty && item.approvedQty !== item.qty ? ` → 批准数量${item.approvedQty}` : '') + `｜${item.reason}`}</p>
-                    {wasDispatched(item) && (
-                      <div className="approval-dispatched-tag">
-                        <Truck size={14} />
-                        <span>已发放，不可重复审批</span>
-                      </div>
-                    )}
-                    {item.approvalComment && (
-                      <div className="approval-comment-preview">
-                        <MessageSquare size={13} />
-                        <span>{item.approvalComment}</span>
-                      </div>
-                    )}
-                    {item.status === '待审批' && !wasDispatched(item) && (
-                      <div className="approval-actions" onClick={(event) => event.stopPropagation()}>
-                        <button
-                          className="approval-btn-approve"
-                          type="button"
-                          onClick={() => handleApprove(item.id)}
-                        >
-                          <CheckCircle size={14} />
-                          批准
-                        </button>
-                        <button
-                          className="approval-btn-reject"
-                          type="button"
-                          onClick={() => handleReject(item.id)}
-                        >
-                          <XCircle size={14} />
-                          驳回
-                        </button>
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </div>
+                    <div className="modal-footer">
+                      <button className="modal-btn-cancel" type="button" onClick={() => setShowBatchApprovalModal(false)}>
+                        取消
+                      </button>
+                      <button className="approval-btn-approve-lg" type="button" onClick={handleBatchApprove}>
+                        <CheckCircle size={16} />
+                        确认批量批准
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </section>
 
             <aside className="panel approval-detail-panel">
