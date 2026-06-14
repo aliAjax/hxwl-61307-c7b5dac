@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap } from 'lucide-react';
+import { useMemo, useState, useRef } from 'react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -494,6 +494,13 @@ function App() {
   const [trendDateRange, setTrendDateRange] = useState({ start: '', end: '' });
   const [trendSystemFilter, setTrendSystemFilter] = useState('全部');
 
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importPreview, setImportPreview] = useState(null);
+  const [importTab, setImportTab] = useState('paste');
+  const [importPreviewTab, setImportPreviewTab] = useState('valid');
+  const fileInputRef = useRef(null);
+
   const [approvalSubTab, setApprovalSubTab] = useState('urgent');
   const [approvalSearch, setApprovalSearch] = useState('');
   const [approvalShip, setApprovalShip] = useState('全部');
@@ -571,6 +578,268 @@ function App() {
     persist([nextRecord, ...records]);
     setForm(appConfig.defaultValues);
     setSelected(nextRecord);
+  }
+
+  const fieldAliasMap = {
+    'ship': ['所属船舶', '船舶', '船名', 'ship', 'vessel'],
+    'partName': ['备件名称', '备件', '配件名称', '配件', '零件名称', 'partname', 'part', 'name'],
+    'system': ['设备系统', '系统', '所属系统', 'system'],
+    'location': ['船舶位置', '位置', '存放位置', '库位', 'location', 'position'],
+    'qty': ['需求数量', '数量', '申请数量', 'qty', 'quantity', 'count'],
+    'urgency': ['紧急程度', '紧急', '优先级', 'urgency', 'priority'],
+    'reason': ['申请原因', '原因', '备注', '说明', 'reason', 'remark', 'note'],
+    'status': ['状态', '申请状态', 'status']
+  };
+
+  function matchField(header) {
+    const lowerHeader = header.trim().toLowerCase();
+    for (const [fieldKey, aliases] of Object.entries(fieldAliasMap)) {
+      for (const alias of aliases) {
+        if (lowerHeader === alias.toLowerCase()) {
+          return fieldKey;
+        }
+      }
+    }
+    return null;
+  }
+
+  function parseCSV(text) {
+    const lines = text.trim().split(/\r?\n/).filter(line => line.trim());
+    if (lines.length < 2) {
+      return { headers: [], rows: [] };
+    }
+
+    const delimiter = lines[0].includes('\t') ? '\t' : (lines[0].includes(';') ? ';' : ',');
+    const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
+    const rows = lines.slice(1).map(line => {
+      const values = line.split(delimiter).map(v => v.trim().replace(/^["']|["']$/g, ''));
+      const row = {};
+      headers.forEach((header, i) => {
+        row[header] = values[i] || '';
+      });
+      return row;
+    });
+
+    return { headers, rows };
+  }
+
+  function validateRow(row, fieldMapping, rowIndex, existingRecords, parsedRows) {
+    const errors = [];
+    const record = {};
+    const requiredFields = ['ship', 'partName', 'system', 'location', 'qty', 'urgency', 'reason'];
+
+    for (const [csvHeader, fieldKey] of Object.entries(fieldMapping)) {
+      if (fieldKey && row[csvHeader] !== undefined) {
+        record[fieldKey] = row[csvHeader].trim();
+      }
+    }
+
+    for (const field of requiredFields) {
+      if (!record[field] || record[field].trim() === '') {
+        const fieldConfig = appConfig.fields.find(f => f.key === field);
+        errors.push(`缺少必填字段：${fieldConfig?.label || field}`);
+      }
+    }
+
+    if (record.ship && !appConfig.ships.includes(record.ship)) {
+      errors.push(`船舶"${record.ship}"不在允许列表中，可选：${appConfig.ships.join('、')}`);
+    }
+
+    if (record.system) {
+      const systemOptions = appConfig.fields.find(f => f.key === 'system')?.options || [];
+      if (!systemOptions.includes(record.system)) {
+        errors.push(`设备系统"${record.system}"不在允许列表中，可选：${systemOptions.join('、')}`);
+      }
+    }
+
+    if (record.urgency) {
+      const urgencyOptions = appConfig.fields.find(f => f.key === 'urgency')?.options || [];
+      if (!urgencyOptions.includes(record.urgency)) {
+        errors.push(`紧急程度"${record.urgency}"不在允许列表中，可选：${urgencyOptions.join('、')}`);
+      }
+    }
+
+    if (record.qty) {
+      const qtyNum = Number(record.qty);
+      if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) {
+        errors.push(`需求数量必须是正整数，当前值：${record.qty}`);
+      }
+    }
+
+    const duplicateInImport = parsedRows.findIndex((r, i) => {
+      if (i >= rowIndex) return false;
+      return r.ship === record.ship &&
+             r.partName === record.partName &&
+             r.system === record.system &&
+             r.location === record.location;
+    });
+    if (duplicateInImport !== -1) {
+      errors.push(`与导入文件中第${duplicateInImport + 2}行数据重复（同一船舶、同一备件、同一系统、同一位置）`);
+    }
+
+    const duplicateInExisting = existingRecords.some(r =>
+      r.ship === record.ship &&
+      r.partName === record.partName &&
+      r.system === record.system &&
+      r.location === record.location &&
+      !wasDispatched(r)
+    );
+    if (duplicateInExisting) {
+      errors.push(`与现有申请记录重复（同一船舶、同一备件、同一系统、同一位置且未发放）`);
+    }
+
+    if (record.status && !appConfig.statuses.includes(record.status)) {
+      record.status = appConfig.primaryStatus;
+    }
+
+    return { record: { ...record, status: record.status || appConfig.primaryStatus }, errors };
+  }
+
+  function analyzeImport(text) {
+    if (!text.trim()) {
+      setImportPreview(null);
+      return;
+    }
+
+    setImportPreviewTab('valid');
+
+    try {
+      const { headers, rows } = parseCSV(text);
+      if (headers.length === 0 || rows.length === 0) {
+        setImportPreview({ error: '无法解析CSV数据，请检查格式是否正确' });
+        return;
+      }
+
+      const fieldMapping = {};
+      const recognizedFields = [];
+      const unrecognizedFields = [];
+
+      headers.forEach(header => {
+        const matched = matchField(header);
+        fieldMapping[header] = matched;
+        if (matched) {
+          recognizedFields.push({ csv: header, field: matched, label: appConfig.fields.find(f => f.key === matched)?.label || matched });
+        } else {
+          unrecognizedFields.push(header);
+        }
+      });
+
+      const requiredFieldKeys = ['ship', 'partName', 'system', 'location', 'qty', 'urgency', 'reason'];
+      const missingRequired = requiredFieldKeys.filter(key => !recognizedFields.some(f => f.field === key));
+
+      const validRows = [];
+      const errorRows = [];
+      const duplicateRows = [];
+
+      const parsedRows = [];
+      rows.forEach((row, index) => {
+        const { record, errors } = validateRow(row, fieldMapping, index, records, parsedRows);
+        parsedRows.push(record);
+
+        const hasDuplicateError = errors.some(e => e.includes('重复'));
+        const hasOtherError = errors.some(e => !e.includes('重复'));
+
+        if (hasOtherError) {
+          errorRows.push({ rowIndex: index + 2, data: record, errors });
+        } else if (hasDuplicateError) {
+          duplicateRows.push({ rowIndex: index + 2, data: record, errors });
+          validRows.push({ rowIndex: index + 2, data: record, warnings: errors });
+        } else {
+          validRows.push({ rowIndex: index + 2, data: record, warnings: [] });
+        }
+      });
+
+      setImportPreview({
+        headers,
+        fieldMapping,
+        recognizedFields,
+        unrecognizedFields,
+        missingRequired: missingRequired.map(key => appConfig.fields.find(f => f.key === key)?.label || key),
+        totalRows: rows.length,
+        validRows,
+        errorRows,
+        duplicateRows,
+        canImport: errorRows.length < rows.length && missingRequired.length === 0
+      });
+    } catch (e) {
+      setImportPreview({ error: '解析CSV时发生错误：' + e.message });
+    }
+  }
+
+  function handleFileUpload(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result;
+      if (typeof text === 'string') {
+        setImportText(text);
+        analyzeImport(text);
+      }
+    };
+    reader.readAsText(file, 'UTF-8');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }
+
+  function handlePaste(event) {
+    const text = event.target.value;
+    setImportText(text);
+    analyzeImport(text);
+  }
+
+  function executeImport() {
+    if (!importPreview || !importPreview.canImport) return;
+
+    const newRecords = importPreview.validRows.map(item => ({
+      id: uid(),
+      ...item.data,
+      status: item.data.status || appConfig.primaryStatus,
+      createdAt: new Date().toISOString(),
+      timeline: [{ status: item.data.status || appConfig.primaryStatus, at: today, by: '批量导入' }]
+    }));
+
+    const nextRecords = [...newRecords, ...records];
+    persist(nextRecords);
+
+    const successCount = newRecords.length;
+    const errorCount = importPreview.errorRows.length;
+    const duplicateCount = importPreview.duplicateRows.length;
+
+    alert(`导入完成！\n\n成功导入：${successCount} 条\n错误行：${errorCount} 条（未导入）\n重复提示：${duplicateCount} 条（已导入但存在重复风险）`);
+
+    setShowImportModal(false);
+    setImportText('');
+    setImportPreview(null);
+    setActiveTab('application');
+  }
+
+  function getSampleCSV() {
+    const headers = appConfig.fields.map(f => f.label).join(',');
+    const sampleRow = appConfig.fields.map(f => {
+      if (f.type === 'select') return f.options[0] || '';
+      return f.placeholder || '';
+    }).join(',');
+    return `${headers}\n${sampleRow}`;
+  }
+
+  function copySampleCSV() {
+    navigator.clipboard.writeText(getSampleCSV()).then(() => {
+      alert('示例CSV格式已复制到剪贴板！');
+    });
+  }
+
+  function downloadSampleCSV() {
+    const csv = getSampleCSV();
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = '备件申请导入示例.csv';
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   function addInventory(event) {
@@ -1347,6 +1616,14 @@ function App() {
                 </label>
               </div>
               <button className="primary" type="submit"><Plus size={18} />新增</button>
+              <button
+                className="primary"
+                type="button"
+                style={{ background: '#0d9488', marginTop: '10px' }}
+                onClick={() => { setShowImportModal(true); setImportText(''); setImportPreview(null); setImportTab('paste'); setImportPreviewTab('valid'); }}
+              >
+                <Upload size={18} />导入CSV
+              </button>
               <p className="hint">{appConfig.note}</p>
             </form>
 
@@ -2915,6 +3192,326 @@ function App() {
             </div>
           </section>
         </>
+      )}
+
+      {showImportModal && (
+        <div className="import-modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowImportModal(false)}>
+          <div className="import-modal">
+            <div className="import-modal-header">
+              <div className="import-modal-title">
+                <FileSpreadsheet size={22} />
+                <h2>导入备件申请</h2>
+              </div>
+              <button
+                className="import-modal-close"
+                type="button"
+                onClick={() => { setShowImportModal(false); setImportText(''); setImportPreview(null); setImportPreviewTab('valid'); }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="import-tabs">
+              <button
+                className={'import-tab ' + (importTab === 'paste' ? 'import-tab-active' : '')}
+                type="button"
+                onClick={() => setImportTab('paste')}
+              >
+                <ClipboardList size={16} />
+                粘贴数据
+              </button>
+              <button
+                className={'import-tab ' + (importTab === 'upload' ? 'import-tab-active' : '')}
+                type="button"
+                onClick={() => setImportTab('upload')}
+              >
+                <Upload size={16} />
+                上传文件
+              </button>
+            </div>
+
+            <div className="import-modal-body">
+              {importTab === 'paste' && (
+                <div className="import-paste-area">
+                  <label className="import-label">
+                    <span>粘贴CSV格式数据</span>
+                    <textarea
+                      className="import-textarea"
+                      value={importText}
+                      onChange={handlePaste}
+                      placeholder="所属船舶,备件名称,设备系统,船舶位置,需求数量,紧急程度,申请原因&#10;远洋一号,海水泵密封圈,机舱,二副库,2,高,巡检发现渗漏，需预防性更换&#10;海运之星,甲板照明灯泡,电气,甲板库,12,中,夜航照明备货"
+                      rows={8}
+                    />
+                  </label>
+                  <div className="import-sample-actions">
+                    <button type="button" className="import-sample-btn" onClick={copySampleCSV}>
+                      <Copy size={14} />复制示例
+                    </button>
+                    <button type="button" className="import-sample-btn" onClick={downloadSampleCSV}>
+                      <Download size={14} />下载模板
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {importTab === 'upload' && (
+                <div className="import-upload-area">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv,.txt"
+                    onChange={handleFileUpload}
+                    style={{ display: 'none' }}
+                  />
+                  <div
+                    className="import-drop-zone"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Upload size={48} style={{ color: '#0891b2', marginBottom: '12px' }} />
+                    <p style={{ fontWeight: 700, color: '#101828', marginBottom: '4px' }}>点击选择CSV文件</p>
+                    <p style={{ color: '#667085', fontSize: '13px' }}>支持 .csv、.txt 格式文件</p>
+                  </div>
+                  {importText && (
+                    <div className="import-file-info">
+                      <FileSpreadsheet size={16} />
+                      <span>已加载数据，共 {importText.split(/\r?\n/).filter(l => l.trim()).length - 1} 行</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {importPreview?.error && (
+                <div className="import-error">
+                  <AlertTriangle size={18} />
+                  <span>{importPreview.error}</span>
+                </div>
+              )}
+
+              {importPreview && !importPreview.error && (
+                <div className="import-preview">
+                  <div className="import-field-mapping">
+                    <div className="import-section-title">
+                      <Info size={16} />
+                      <h3>字段识别结果</h3>
+                    </div>
+                    <div className="import-field-list">
+                      {importPreview.recognizedFields.map((f, i) => (
+                        <div key={i} className="import-field-item import-field-ok">
+                          <CheckCircle size={14} />
+                          <span className="import-field-csv">{f.csv}</span>
+                          <ArrowRight size={14} />
+                          <span className="import-field-target">{f.label}</span>
+                        </div>
+                      ))}
+                      {importPreview.unrecognizedFields.map((f, i) => (
+                        <div key={i} className="import-field-item import-field-ignore">
+                          <XCircle size={14} />
+                          <span className="import-field-csv">{f}</span>
+                          <ArrowRight size={14} />
+                          <span className="import-field-target">无法识别，将忽略</span>
+                        </div>
+                      ))}
+                    </div>
+                    {importPreview.missingRequired.length > 0 && (
+                      <div className="import-missing-fields">
+                        <AlertTriangle size={16} />
+                        <span>缺少必填字段：{importPreview.missingRequired.join('、')}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="import-stats">
+                    <div className="import-stat-item import-stat-total">
+                      <strong>{importPreview.totalRows}</strong>
+                      <span>总行数</span>
+                    </div>
+                    <div className="import-stat-item import-stat-valid">
+                      <strong>{importPreview.validRows.length}</strong>
+                      <span>有效行</span>
+                    </div>
+                    <div className="import-stat-item import-stat-error">
+                      <strong>{importPreview.errorRows.length}</strong>
+                      <span>错误行</span>
+                    </div>
+                    <div className="import-stat-item import-stat-duplicate">
+                      <strong>{importPreview.duplicateRows.length}</strong>
+                      <span>重复提示</span>
+                    </div>
+                  </div>
+
+                  <div className="import-preview-tabs">
+                    <button
+                      className={'import-preview-tab ' + (importPreviewTab === 'valid' ? 'import-preview-tab-active' : '')}
+                      type="button"
+                      onClick={() => setImportPreviewTab('valid')}
+                    >
+                      <CheckCircle2 size={14} />
+                      有效行 ({importPreview.validRows.length})
+                    </button>
+                    <button
+                      className={'import-preview-tab ' + (importPreviewTab === 'error' ? 'import-preview-tab-active' : '')}
+                      type="button"
+                      onClick={() => setImportPreviewTab('error')}
+                    >
+                      <XCircle size={14} />
+                      错误行 ({importPreview.errorRows.length})
+                    </button>
+                    {importPreview.duplicateRows.length > 0 && (
+                      <button
+                        className={'import-preview-tab ' + (importPreviewTab === 'duplicate' ? 'import-preview-tab-active' : '')}
+                        type="button"
+                        onClick={() => setImportPreviewTab('duplicate')}
+                      >
+                        <AlertTriangle size={14} />
+                        重复提示 ({importPreview.duplicateRows.length})
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="import-preview-list">
+                    {importPreviewTab === 'valid' && importPreview.validRows.length > 0 && (
+                      <div className="import-preview-section">
+                        {importPreview.validRows.map((item, i) => (
+                          <div key={i} className={'import-preview-row ' + (item.warnings.length > 0 ? 'import-preview-row-warning' : '')}>
+                            <div className="import-preview-row-head">
+                              <span className="import-row-index">第 {item.rowIndex} 行</span>
+                              {item.warnings.length > 0 && (
+                                <span className="import-row-warning">
+                                  <AlertTriangle size={12} />
+                                  存在重复风险
+                                </span>
+                              )}
+                            </div>
+                            <div className="import-preview-row-data">
+                              <span className="import-preview-ship">{item.data.ship}</span>
+                              <span className="import-preview-part">{item.data.partName}</span>
+                              <span className="import-preview-system">{item.data.system}</span>
+                              <span className="import-preview-location">{item.data.location}</span>
+                              <span className="import-preview-qty">x{item.data.qty}</span>
+                              <span className={'import-preview-urgency urgency-' + (item.data.urgency === '高' ? 'high' : item.data.urgency === '中' ? 'medium' : 'low')}>
+                                {item.data.urgency}
+                              </span>
+                            </div>
+                            <div className="import-preview-row-reason">{item.data.reason}</div>
+                            {item.warnings.length > 0 && (
+                              <div className="import-row-warnings">
+                                {item.warnings.map((w, wi) => (
+                                  <div key={wi} className="import-row-warning-item">
+                                    <AlertTriangle size={12} />
+                                    {w}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {importPreviewTab === 'valid' && importPreview.validRows.length === 0 && (
+                      <p className="empty">暂无有效行数据</p>
+                    )}
+
+                    {importPreviewTab === 'error' && importPreview.errorRows.length > 0 && (
+                      <div className="import-preview-section">
+                        {importPreview.errorRows.map((item, i) => (
+                          <div key={i} className="import-preview-row import-preview-row-error">
+                            <div className="import-preview-row-head">
+                              <span className="import-row-index">第 {item.rowIndex} 行</span>
+                              <span className="import-row-error-tag">
+                                <XCircle size={12} />
+                                错误
+                              </span>
+                            </div>
+                            <div className="import-preview-row-data">
+                              <span className="import-preview-ship">{item.data.ship || '-'}</span>
+                              <span className="import-preview-part">{item.data.partName || '-'}</span>
+                              <span className="import-preview-system">{item.data.system || '-'}</span>
+                              <span className="import-preview-location">{item.data.location || '-'}</span>
+                              <span className="import-preview-qty">x{item.data.qty || '-'}</span>
+                              <span className="import-preview-urgency">{item.data.urgency || '-'}</span>
+                            </div>
+                            <div className="import-preview-row-reason">{item.data.reason || '-'}</div>
+                            <div className="import-row-errors">
+                              {item.errors.map((e, ei) => (
+                                <div key={ei} className="import-row-error-item">
+                                  <XCircle size={12} />
+                                  {e}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {importPreviewTab === 'error' && importPreview.errorRows.length === 0 && (
+                      <p className="empty">暂无错误行数据</p>
+                    )}
+
+                    {importPreviewTab === 'duplicate' && importPreview.duplicateRows.length > 0 && (
+                      <div className="import-preview-section">
+                        {importPreview.duplicateRows.map((item, i) => (
+                          <div key={i} className="import-preview-row import-preview-row-warning">
+                            <div className="import-preview-row-head">
+                              <span className="import-row-index">第 {item.rowIndex} 行</span>
+                              <span className="import-row-warning">
+                                <AlertTriangle size={12} />
+                                重复提示
+                              </span>
+                            </div>
+                            <div className="import-preview-row-data">
+                              <span className="import-preview-ship">{item.data.ship}</span>
+                              <span className="import-preview-part">{item.data.partName}</span>
+                              <span className="import-preview-system">{item.data.system}</span>
+                              <span className="import-preview-location">{item.data.location}</span>
+                              <span className="import-preview-qty">x{item.data.qty}</span>
+                              <span className={'import-preview-urgency urgency-' + (item.data.urgency === '高' ? 'high' : item.data.urgency === '中' ? 'medium' : 'low')}>
+                                {item.data.urgency}
+                              </span>
+                            </div>
+                            <div className="import-preview-row-reason">{item.data.reason}</div>
+                            <div className="import-row-warnings">
+                              {item.errors.map((w, wi) => (
+                                <div key={wi} className="import-row-warning-item">
+                                  <AlertTriangle size={12} />
+                                  {w}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {importPreviewTab === 'duplicate' && importPreview.duplicateRows.length === 0 && (
+                      <p className="empty">暂无重复提示数据</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="import-modal-footer">
+              <button
+                type="button"
+                className="import-cancel-btn"
+                onClick={() => { setShowImportModal(false); setImportText(''); setImportPreview(null); setImportPreviewTab('valid'); }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="import-confirm-btn"
+                onClick={executeImport}
+                disabled={!importPreview?.canImport}
+              >
+                <CheckCircle size={16} />
+                确认导入 ({importPreview?.validRows.length || 0} 条)
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );
