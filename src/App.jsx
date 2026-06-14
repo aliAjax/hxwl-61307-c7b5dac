@@ -3586,6 +3586,14 @@ function App() {
                                     onChange={(event) => setPurchaseForm({ ...purchaseForm, etaDate: event.target.value })}
                                   />
                                 </label>
+                                <label>
+                                  <span>实际到货日期（可选）</span>
+                                  <input
+                                    type="date"
+                                    value={purchaseForm.arrivalDate}
+                                    onChange={(event) => setPurchaseForm({ ...purchaseForm, arrivalDate: event.target.value })}
+                                  />
+                                </label>
                                 <label className="wide">
                                   <span>采购备注</span>
                                   <textarea
