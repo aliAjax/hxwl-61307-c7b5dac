@@ -533,6 +533,19 @@ textarea { min-height: 76px; resize: vertical; }
   line-height: 1.6;
 }
 
+.template-stats {
+  color: #667085 !important;
+  font-size: 13px;
+  padding: 8px 0;
+  border-top: 1px dashed #e5e7eb;
+  margin-top: 4px;
+}
+
+.template-stats strong {
+  color: #7c3aed;
+  font-weight: 600;
+}
+
 .ship-dashboard {
   margin-bottom: 18px;
 }

@@ -255,7 +255,8 @@ const appConfig = {
     "qty": "2",
     "urgency": "高",
     "reason": "巡检发现渗漏，需预防性更换",
-    "status": "待审批"
+    "status": "待审批",
+    "fromTemplateId": ""
   }
 };
 
@@ -403,7 +404,8 @@ function loadRecords() {
           ...item,
           ship: item.ship || appConfig.ships[0],
           timeline: item.timeline || [{ status: item.status, at: today, by: '系统' }],
-          hasBeenDispatched: dispatched
+          hasBeenDispatched: dispatched,
+          fromTemplateId: item.fromTemplateId || ''
         };
       });
     } catch {
@@ -436,13 +438,15 @@ function loadTemplates() {
       const parsed = JSON.parse(raw);
       return parsed.map(item => ({
         ...item,
-        ship: item.ship || appConfig.ships[0]
+        ship: item.ship || appConfig.ships[0],
+        useCount: item.useCount || 0,
+        lastUsedAt: item.lastUsedAt || null
       }));
     } catch {
-      return templateConfig.seed.map(item => ({ id: uid(), ...item }));
+      return templateConfig.seed.map(item => ({ id: uid(), useCount: 0, lastUsedAt: null, ...item }));
     }
   }
-  return templateConfig.seed.map(item => ({ id: uid(), ...item }));
+  return templateConfig.seed.map(item => ({ id: uid(), useCount: 0, lastUsedAt: null, ...item }));
 }
 
 function loadPurchases() {
@@ -528,7 +532,7 @@ function App() {
 
   const [templates, setTemplates] = useState(loadTemplates);
   const [templateForm, setTemplateForm] = useState(templateConfig.defaultValues);
-  const [templateFilters, setTemplateFilters] = useState({ query: '', system: '全部' });
+  const [templateFilters, setTemplateFilters] = useState({ query: '', system: '全部', sortBy: 'default' });
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [selectedApplyTemplate, setSelectedApplyTemplate] = useState('');
 
@@ -959,6 +963,19 @@ function App() {
       const temp = Number(nextRecord.temperature || 0);
       nextRecord.temps = [temp];
       if (temp > 2) nextRecord.status = '异常';
+    }
+
+    if (nextRecord.fromTemplateId) {
+      const templateId = nextRecord.fromTemplateId;
+      const updatedTemplates = templates.map((t) =>
+        t.id === templateId
+          ? { ...t, useCount: (t.useCount || 0) + 1, lastUsedAt: new Date().toISOString() }
+          : t
+      );
+      persistTemplates(updatedTemplates);
+      if (selectedTemplate?.id === templateId) {
+        setSelectedTemplate(updatedTemplates.find((t) => t.id === templateId));
+      }
     }
 
     enqueueAndRefresh({
@@ -1662,6 +1679,8 @@ function App() {
     const nextItem = {
       id: uid(),
       ...templateForm,
+      useCount: 0,
+      lastUsedAt: null,
       createdAt: new Date().toISOString()
     };
     persistTemplates([nextItem, ...templates]);
@@ -1685,7 +1704,8 @@ function App() {
         system: template.system,
         location: template.location,
         qty: template.qty,
-        reason: template.reason
+        reason: template.reason,
+        fromTemplateId: template.id
       });
     }
     setSelectedApplyTemplate('');
@@ -1975,9 +1995,24 @@ function App() {
   }, [filteredInventory]);
 
   const filteredTemplates = useMemo(() => {
-    return templates
+    const filtered = templates
       .filter((item) => !templateFilters.query || `${item.templateName}${item.partName}${item.system}${item.location}`.includes(templateFilters.query))
       .filter((item) => templateFilters.system === '全部' || item.system === templateFilters.system);
+    
+    switch (templateFilters.sortBy) {
+      case 'recentUsed':
+        return [...filtered].sort((a, b) => {
+          const timeA = a.lastUsedAt ? new Date(a.lastUsedAt).getTime() : 0;
+          const timeB = b.lastUsedAt ? new Date(b.lastUsedAt).getTime() : 0;
+          return timeB - timeA;
+        });
+      case 'useCount':
+        return [...filtered].sort((a, b) => (b.useCount || 0) - (a.useCount || 0));
+      case 'system':
+        return [...filtered].sort((a, b) => String(a.system || '').localeCompare(String(b.system || '')));
+      default:
+        return filtered;
+    }
   }, [templates, templateFilters]);
 
   const templateMetrics = [
@@ -3580,6 +3615,12 @@ function App() {
                   <option>全部</option>
                   {templateConfig.fields.find(f => f.key === 'system')?.options.map((sys) => <option key={sys}>{sys}</option>)}
                 </select>
+                <select value={templateFilters.sortBy} onChange={(event) => setTemplateFilters({ ...templateFilters, sortBy: event.target.value })}>
+                  <option value="default">默认排序</option>
+                  <option value="recentUsed">按最近使用</option>
+                  <option value="useCount">按使用次数</option>
+                  <option value="system">按系统筛选</option>
+                </select>
               </div>
 
               <div className="records">
@@ -3597,6 +3638,10 @@ function App() {
                       </div>
                       <p className="record-detail">{`位置: ${item.location}｜数量: ${item.qty}`}</p>
                       <p className="record-detail">{`原因: ${item.reason}`}</p>
+                      <p className="record-detail template-stats">
+                        <span>使用次数: <strong>{item.useCount || 0}</strong></span>
+                        <span style={{ marginLeft: '12px' }}>最近使用: {item.lastUsedAt ? new Date(item.lastUsedAt).toLocaleDateString('zh-CN') : '从未使用'}</span>
+                      </p>
                       <div className="actions" onClick={(event) => event.stopPropagation()}>
                         <button
                           type="button"
@@ -3652,6 +3697,22 @@ function App() {
                     <div className="stock-item">
                       <span>默认数量</span>
                       <strong>{selectedTemplate.qty}</strong>
+                    </div>
+                  </div>
+                  <div className="stock-info" style={{ marginTop: '12px', borderTop: '1px solid #f1f5f9', paddingTop: '12px' }}>
+                    <div className="stock-item">
+                      <span>使用次数</span>
+                      <strong>{selectedTemplate.useCount || 0}</strong>
+                    </div>
+                    <div className="stock-item">
+                      <span>最近使用</span>
+                      <strong>{selectedTemplate.lastUsedAt ? new Date(selectedTemplate.lastUsedAt).toLocaleDateString('zh-CN') : '从未使用'}</strong>
+                    </div>
+                  </div>
+                  <div className="stock-info" style={{ marginTop: '12px', borderTop: '1px solid #f1f5f9', paddingTop: '12px' }}>
+                    <div className="stock-item" style={{ width: '100%' }}>
+                      <span>已生成申请数</span>
+                      <strong>{records.filter((r) => r.fromTemplateId === selectedTemplate.id).length}</strong>
                     </div>
                   </div>
                   <div className="template-reason">
