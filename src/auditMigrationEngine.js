@@ -62,6 +62,18 @@ function safeParse(raw, fallback) {
   }
 }
 
+function parseMigrationArray(raw, storageName) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      throw new Error(`${storageName}不是数组格式`);
+    }
+    return parsed;
+  } catch (error) {
+    throw new Error(`${storageName}数据解析失败：${error.message || String(error)}`);
+  }
+}
+
 function getTimestamp() {
   return new Date().toISOString();
 }
@@ -183,7 +195,7 @@ function migrateFromV0ToV1() {
   const today = new Date().toISOString().slice(0, 10);
   const recordsRaw = localStorage.getItem(STORAGE_KEYS.RECORDS);
   if (recordsRaw) {
-    const records = safeParse(recordsRaw, []);
+    const records = parseMigrationArray(recordsRaw, '申请记录');
     const migrated = records.map((item) => {
       const dispatched = item.hasBeenDispatched || (item.timeline || []).some((step) => step.status === '已发放');
       return {
@@ -200,7 +212,7 @@ function migrateFromV0ToV1() {
 
   const inventoryRaw = localStorage.getItem(STORAGE_KEYS.INVENTORY);
   if (inventoryRaw) {
-    const inventory = safeParse(inventoryRaw, []);
+    const inventory = parseMigrationArray(inventoryRaw, '库存记录');
     const migrated = inventory.map((item) => ({
       ...item,
       createdAt: item.createdAt || new Date().toISOString(),
@@ -211,7 +223,7 @@ function migrateFromV0ToV1() {
 
   const templatesRaw = localStorage.getItem(STORAGE_KEYS.TEMPLATES);
   if (templatesRaw) {
-    const templates = safeParse(templatesRaw, []);
+    const templates = parseMigrationArray(templatesRaw, '模板记录');
     const migrated = templates.map((item) => ({
       ...item,
       createdAt: item.createdAt || new Date().toISOString(),
@@ -222,7 +234,7 @@ function migrateFromV0ToV1() {
 
   const distRaw = localStorage.getItem(STORAGE_KEYS.DISTRIBUTION);
   if (distRaw) {
-    const dist = safeParse(distRaw, []);
+    const dist = parseMigrationArray(distRaw, '发放记录');
     const migrated = dist.map((item) => ({
       ...item,
       createdAt: item.createdAt || new Date().toISOString(),
@@ -233,7 +245,7 @@ function migrateFromV0ToV1() {
 
   const purchasesRaw = localStorage.getItem(STORAGE_KEYS.PURCHASES);
   if (purchasesRaw) {
-    const purchases = safeParse(purchasesRaw, []);
+    const purchases = parseMigrationArray(purchasesRaw, '采购记录');
     const migrated = purchases.map((item) => ({
       ...item,
       createdAt: item.createdAt || new Date().toISOString(),
@@ -248,7 +260,7 @@ function migrateFromV1ToV2() {
   const today = new Date().toISOString().slice(0, 10);
   const recordsRaw = localStorage.getItem(STORAGE_KEYS.RECORDS);
   if (recordsRaw) {
-    const records = safeParse(recordsRaw, []);
+    const records = parseMigrationArray(recordsRaw, '申请记录');
     const migrated = records.map((item) => {
       const timeline = item.timeline || [];
       if (timeline.length > 0 && !timeline[0].action) {
@@ -298,7 +310,7 @@ function migrateFromV1ToV2() {
 
   const purchasesRaw = localStorage.getItem(STORAGE_KEYS.PURCHASES);
   if (purchasesRaw) {
-    const purchases = safeParse(purchasesRaw, []);
+    const purchases = parseMigrationArray(purchasesRaw, '采购记录');
     const migrated = purchases.map((item) => ({
       ...item,
       dataVersion: 2,
