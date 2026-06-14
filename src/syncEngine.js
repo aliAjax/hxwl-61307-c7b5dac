@@ -195,6 +195,7 @@ export function detectConflicts(localOps, baseline, remoteRecords) {
       (o) => o.type === OP_TYPES.APPROVE || o.type === OP_TYPES.REJECT
     );
     if (deleteOp && approveOrRejectOp && approveOrRejectOp.timestamp > deleteOp.timestamp) {
+      const deletedRecord = deleteOp.payload?.originalRecord || baseline[recordId] || null;
       conflicts.push({
         id: 'conflict_' + uid(),
         type: CONFLICT_TYPES.DELETE_THEN_APPROVE,
@@ -216,6 +217,7 @@ export function detectConflicts(localOps, baseline, remoteRecords) {
         approveAt: approveOrRejectOp.timestamp,
         approveType: approveOrRejectOp.type,
         approveData: approveOrRejectOp.payload,
+        deletedRecord: deletedRecord ? deepClone(deletedRecord) : null,
         affectedOps: [deleteOp.id, approveOrRejectOp.id],
         autoResolvable: false,
         recommendedStrategy: null,
@@ -443,24 +445,40 @@ export function applyConflictResolution(conflict, strategy, currentRecords) {
         result.note = '记录已删除，审批操作已撤销';
       } else if (strategy === RESOLUTION_STRATEGIES.KEEP_REMOTE) {
         const approveData = conflict.approveData || {};
-        result.records = result.records.map((r) => {
-          if (r.id !== conflict.targetId) return r;
-          const timeline = [...(r.timeline || [])];
+        const newStatus = approveData.toStatus || (conflict.approveType === OP_TYPES.APPROVE ? '已批准' : '已驳回');
+        const existingIdx = result.records.findIndex((r) => r.id === conflict.targetId);
+        if (existingIdx !== -1) {
+          const timeline = [...(result.records[existingIdx].timeline || [])];
           timeline.push({
-            status: approveData.toStatus || (conflict.approveType === OP_TYPES.APPROVE ? '已批准' : '已驳回'),
+            status: newStatus,
             at: new Date().toISOString().slice(0, 10),
             by: approveData.by || '操作员',
             comment: approveData.comment || '',
             action: 'sync-restore',
           });
-          return {
-            ...r,
-            status: approveData.toStatus || (conflict.approveType === OP_TYPES.APPROVE ? '已批准' : '已驳回'),
-            approvedQty: approveData.approvedQty || r.approvedQty,
+          result.records[existingIdx] = {
+            ...result.records[existingIdx],
+            status: newStatus,
+            approvedQty: approveData.approvedQty || result.records[existingIdx].approvedQty,
             _wasRestored: true,
             timeline,
           };
-        });
+        } else if (conflict.deletedRecord) {
+          const restored = deepClone(conflict.deletedRecord);
+          const timeline = [...(restored.timeline || [])];
+          timeline.push({
+            status: newStatus,
+            at: new Date().toISOString().slice(0, 10),
+            by: approveData.by || '操作员',
+            comment: approveData.comment || '',
+            action: 'sync-restore',
+          });
+          restored.status = newStatus;
+          restored.approvedQty = approveData.approvedQty || restored.approvedQty;
+          restored._wasRestored = true;
+          restored.timeline = timeline;
+          result.records.push(restored);
+        }
         result.opsToRemove = conflict.affectedOps;
         result.note = '记录已恢复并保留审批结果';
       }
@@ -503,6 +521,21 @@ export function applyConflictResolution(conflict, strategy, currentRecords) {
         result.opsToRemove = conflict.affectedOps;
         result.note = '记录已根据服务端状态删除';
       } else if (strategy === RESOLUTION_STRATEGIES.KEEP_LOCAL) {
+        const existingIdx = result.records.findIndex((r) => r.id === conflict.targetId);
+        if (existingIdx === -1 && conflict.baselineRecord) {
+          const restored = deepClone(conflict.baselineRecord);
+          const timeline = [...(restored.timeline || [])];
+          timeline.push({
+            status: restored.status,
+            at: new Date().toISOString().slice(0, 10),
+            by: '同步恢复',
+            comment: '根据本地修改重新创建该记录',
+            action: 'sync-recreate',
+          });
+          restored.timeline = timeline;
+          restored._wasRecreated = true;
+          result.records.push(restored);
+        }
         result.opsToRemove = conflict.affectedOps;
         result.note = '记录根据本地修改重新创建';
       }

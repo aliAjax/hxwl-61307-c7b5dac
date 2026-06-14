@@ -680,13 +680,15 @@ function App() {
       addLog('warn', `检测到${detectedConflicts.length}个冲突，正在处理...`);
 
       const existingConflicts = loadConflicts();
-      const unresolvedIds = new Set(existingConflicts.filter((c) => !c.resolved).map((c) => c.id.split('_dup')[0]));
+      const existingConflictKeys = new Set(
+        existingConflicts.map((c) => `${c.type}-${c.targetId}`)
+      );
       let allConflicts = [...existingConflicts];
       detectedConflicts.forEach((dc) => {
         const matchKey = `${dc.type}-${dc.targetId}`;
-        if (!unresolvedIds.has(matchKey)) {
+        if (!existingConflictKeys.has(matchKey)) {
           allConflicts.push(dc);
-          unresolvedIds.add(matchKey);
+          existingConflictKeys.add(matchKey);
         }
       });
       saveConflicts(allConflicts);
@@ -783,6 +785,12 @@ function App() {
     const idx = list.findIndex((c) => c.id === conflictId);
     if (idx === -1) return;
     const conflict = list[idx];
+    if (!conflict.deletedRecord && conflict.type === CONFLICT_TYPES.DELETE_THEN_APPROVE) {
+      const bl = loadBaseline();
+      if (bl[conflict.targetId]) {
+        conflict.deletedRecord = JSON.parse(JSON.stringify(bl[conflict.targetId]));
+      }
+    }
     const resolved = {
       ...conflict,
       resolved: true,
