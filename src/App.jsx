@@ -25,6 +25,22 @@ import {
   simulateServerLatency,
   clearAllSyncData,
 } from './syncEngine';
+import {
+  AUDIT_EVENT_TYPES,
+  AUDIT_EVENT_LABELS,
+  CURRENT_DATA_VERSION,
+  runMigrations,
+  getDataVersion,
+  getMigrationLog,
+  listBackups,
+  restoreBackup,
+  logAuditEvent,
+  getAuditEventsByTarget,
+  queryAuditEvents,
+  getAuditStats,
+  downloadAuditLogCSV,
+  setOperator,
+} from './auditMigrationEngine';
 
 const appConfig = {
   "id": "hxwl-61307",
@@ -560,6 +576,20 @@ function App() {
   const [syncLog, setSyncLog] = useState([]);
   const [expandedConflicts, setExpandedConflicts] = useState({});
 
+  const [migrationStatus, setMigrationStatus] = useState(null);
+  const [showMigrationAlert, setShowMigrationAlert] = useState(false);
+  const [dataVersion, setDataVersion] = useState(() => getDataVersion());
+  const [auditTab, setAuditTab] = useState('overview');
+  const [auditFilters, setAuditFilters] = useState({
+    eventType: '全部',
+    operator: '',
+    startDate: '',
+    endDate: '',
+  });
+  const [operatorName, setOperatorName] = useState(() => localStorage.getItem('hxwl-61307-operator') || '当前用户');
+  const [showAuditExportModal, setShowAuditExportModal] = useState(false);
+  const [expandedAuditEvents, setExpandedAuditEvents] = useState({});
+
   const pendingCount = getPendingOperations().length;
   const unresolvedConflictCount = conflicts.filter((c) => !c.resolved).length;
 
@@ -615,6 +645,27 @@ function App() {
       const fresh = takeBaseline(records);
       setBaseline(fresh);
       addLog('info', '已创建初始数据基线（' + records.length + '条记录）');
+    }
+  }, []);
+
+  useEffect(() => {
+    const result = runMigrations();
+    setMigrationStatus(result);
+    setDataVersion(getDataVersion());
+    if (result.migrated) {
+      addLog(result.success ? 'success' : 'error', `数据迁移：${result.message}`);
+      if (result.success) {
+        setRecords(loadRecords());
+        setInventory(loadInventory());
+        setTemplates(loadTemplates());
+        setPurchases(loadPurchases());
+        const freshBaseline = takeBaseline(loadRecords());
+        setBaseline(freshBaseline);
+      }
+      setShowMigrationAlert(true);
+    } else if (!result.success) {
+      addLog('error', `数据迁移失败：${result.message}`);
+      setShowMigrationAlert(true);
     }
   }, []);
 
@@ -906,6 +957,21 @@ function App() {
       type: OP_TYPES.CREATE,
       targetId: nextRecord.id,
       payload: { ...nextRecord, record: nextRecord },
+    });
+
+    logAuditEvent({
+      eventType: AUDIT_EVENT_TYPES.CREATE,
+      targetType: 'record',
+      targetId: nextRecord.id,
+      afterData: nextRecord,
+      metadata: {
+        ship: nextRecord.ship,
+        partName: nextRecord.partName,
+        system: nextRecord.system,
+        qty: nextRecord.qty,
+        urgency: nextRecord.urgency,
+      },
+      operator: operatorName,
     });
 
     persist([nextRecord, ...records]);
@@ -1207,6 +1273,23 @@ function App() {
     const nextRecords = [...newRecords, ...records];
     persist(nextRecords);
 
+    newRecords.forEach((record) => {
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.IMPORT,
+        targetType: 'record',
+        targetId: record.id,
+        afterData: record,
+        metadata: {
+          ship: record.ship,
+          partName: record.partName,
+          system: record.system,
+          qty: record.qty,
+          importBatch: true,
+        },
+        operator: operatorName,
+      });
+    });
+
     const successCount = newRecords.length;
     const errorCount = importPreview.errorRows.length;
     const duplicateCount = importPreview.duplicateRows.length;
@@ -1278,11 +1361,28 @@ function App() {
       targetId: id,
       payload: { fromStatus, toStatus: status, by: '操作员', partName: item.partName },
     });
-    const next = records.map((item) => item.id === id ? {
+    const updatedItem = {
       ...item,
       status,
       timeline: [...(item.timeline || []), { status, at: today, by: '操作员' }]
-    } : item);
+    };
+    const next = records.map((r) => r.id === id ? updatedItem : r);
+
+    logAuditEvent({
+      eventType: status === '已批准' ? AUDIT_EVENT_TYPES.APPROVE : status === '已驳回' ? AUDIT_EVENT_TYPES.REJECT : AUDIT_EVENT_TYPES.UPDATE_STATUS,
+      targetType: 'record',
+      targetId: id,
+      beforeData: item,
+      afterData: updatedItem,
+      metadata: {
+        fromStatus,
+        toStatus: status,
+        ship: item.ship,
+        partName: item.partName,
+      },
+      operator: operatorName,
+    });
+
     persist(next);
     if (selected?.id === id) setSelected(next.find((item) => item.id === id));
   }
@@ -1294,6 +1394,20 @@ function App() {
         type: OP_TYPES.DELETE,
         targetId: id,
         payload: { partName: item.partName, ship: item.ship, originalRecord: item },
+      });
+
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.DELETE,
+        targetType: 'record',
+        targetId: id,
+        beforeData: item,
+        metadata: {
+          ship: item.ship,
+          partName: item.partName,
+          system: item.system,
+          status: item.status,
+        },
+        operator: operatorName,
       });
     }
     const next = records.filter((item) => item.id !== id);
@@ -1351,6 +1465,7 @@ function App() {
       }]
     };
     persistPurchases([purchaseRecord, ...purchases]);
+    const appBefore = records.find((item) => item.id === purchaseForm.applicationId);
     const updatedRecords = records.map((item) => item.id === purchaseForm.applicationId ? {
       ...item,
       hasPurchase: true,
@@ -1363,6 +1478,23 @@ function App() {
         action: 'purchase-create'
       }]
     } : item);
+
+    logAuditEvent({
+      eventType: AUDIT_EVENT_TYPES.PURCHASE_CREATE,
+      targetType: 'purchase',
+      targetId: purchaseRecord.id,
+      afterData: purchaseRecord,
+      metadata: {
+        applicationId: purchaseForm.applicationId,
+        supplier: purchaseForm.supplier,
+        purchaseQty: purchaseRecord.purchaseQty,
+        etaDate: purchaseForm.etaDate,
+        ship: application.ship,
+        partName: application.partName,
+      },
+      operator: operatorName,
+    });
+
     persist(updatedRecords);
     if (selected?.id === purchaseForm.applicationId) {
       setSelected(updatedRecords.find((item) => item.id === purchaseForm.applicationId));
@@ -1382,17 +1514,39 @@ function App() {
       comment: extraData.comment || '',
       action: status === '已到货' ? 'arrive' : 'update'
     };
-    const nextPurchases = purchases.map((p) => p.id === id ? {
-      ...p,
+    const updatedPurchase = {
+      ...purchase,
       status,
-      arrivalDate: status === '已到货' ? (extraData.arrivalDate || today) : p.arrivalDate,
-      timeline: [...(p.timeline || []), timelineEntry]
-    } : p);
+      arrivalDate: status === '已到货' ? (extraData.arrivalDate || today) : purchase.arrivalDate,
+      timeline: [...(purchase.timeline || []), timelineEntry]
+    };
+    const nextPurchases = purchases.map((p) => p.id === id ? updatedPurchase : p);
+
+    const eventType = status === '已到货' ? AUDIT_EVENT_TYPES.PURCHASE_ARRIVE : AUDIT_EVENT_TYPES.PURCHASE_UPDATE;
+    logAuditEvent({
+      eventType,
+      targetType: 'purchase',
+      targetId: id,
+      beforeData: purchase,
+      afterData: updatedPurchase,
+      metadata: {
+        fromStatus: purchase.status,
+        toStatus: status,
+        arrivalDate: status === '已到货' ? (extraData.arrivalDate || today) : undefined,
+        comment: extraData.comment || '',
+        applicationId: purchase.applicationId,
+        ship: purchase.ship,
+        partName: purchase.partName,
+      },
+      operator: operatorName,
+    });
+
     persistPurchases(nextPurchases);
     if (selectedPurchase?.id === id) {
       setSelectedPurchase(nextPurchases.find((p) => p.id === id));
     }
     if (purchase.applicationId) {
+      const appBefore = records.find((item) => item.id === purchase.applicationId);
       const updatedRecords = records.map((item) => item.id === purchase.applicationId ? {
         ...item,
         purchaseStatus: status,
@@ -1406,6 +1560,27 @@ function App() {
           action: status === '已到货' ? 'purchase-arrive' : 'purchase-update'
         }]
       } : item);
+
+      if (eventType === AUDIT_EVENT_TYPES.PURCHASE_ARRIVE) {
+        const appAfter = updatedRecords.find((r) => r.id === purchase.applicationId);
+        logAuditEvent({
+          eventType: AUDIT_EVENT_TYPES.PURCHASE_ARRIVE,
+          targetType: 'record',
+          targetId: purchase.applicationId,
+          beforeData: appBefore,
+          afterData: appAfter,
+          metadata: {
+            purchaseId: id,
+            purchaseQty: purchase.purchaseQty,
+            arrivalDate: status === '已到货' ? (extraData.arrivalDate || today) : undefined,
+            comment: extraData.comment || '',
+            ship: purchase.ship,
+            partName: purchase.partName,
+          },
+          operator: operatorName,
+        });
+      }
+
       persist(updatedRecords);
       if (selected?.id === purchase.applicationId) {
         setSelected(updatedRecords.find((item) => item.id === purchase.applicationId));
@@ -1415,6 +1590,23 @@ function App() {
 
   function removePurchase(id) {
     const purchase = purchases.find((p) => p.id === id);
+    if (purchase) {
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.PURCHASE_DELETE,
+        targetType: 'purchase',
+        targetId: id,
+        beforeData: purchase,
+        metadata: {
+          applicationId: purchase.applicationId,
+          supplier: purchase.supplier,
+          purchaseQty: purchase.purchaseQty,
+          status: purchase.status,
+          ship: purchase.ship,
+          partName: purchase.partName,
+        },
+        operator: operatorName,
+      });
+    }
     const next = purchases.filter((p) => p.id !== id);
     persistPurchases(next);
     if (selectedPurchase?.id === id) setSelectedPurchase(null);
@@ -1508,13 +1700,32 @@ function App() {
       approvedQty: String(approvedQty),
       action: 'approve'
     };
-    const next = records.map((r) => r.id === id ? {
-      ...r,
+    const updatedItem = {
+      ...item,
       status: '已批准',
       approvedQty: String(approvedQty),
       approvalComment: approvalComment || '',
-      timeline: [...(r.timeline || []), timelineEntry]
-    } : r);
+      timeline: [...(item.timeline || []), timelineEntry]
+    };
+    const next = records.map((r) => r.id === id ? updatedItem : r);
+
+    logAuditEvent({
+      eventType: AUDIT_EVENT_TYPES.APPROVE,
+      targetType: 'record',
+      targetId: id,
+      beforeData: item,
+      afterData: updatedItem,
+      metadata: {
+        approvedQty: String(approvedQty),
+        originalQty: item.qty,
+        comment: approvalComment || '',
+        role: approvalRole,
+        ship: item.ship,
+        partName: item.partName,
+      },
+      operator: approvalRole,
+    });
+
     persist(next);
     if (selectedApproval?.id === id) {
       setSelectedApproval(next.find((r) => r.id === id));
@@ -1559,12 +1770,29 @@ function App() {
       comment: approvalComment,
       action: 'reject'
     };
-    const next = records.map((r) => r.id === id ? {
-      ...r,
+    const updatedItem = {
+      ...item,
       status: '已驳回',
       approvalComment: approvalComment,
-      timeline: [...(r.timeline || []), timelineEntry]
-    } : r);
+      timeline: [...(item.timeline || []), timelineEntry]
+    };
+    const next = records.map((r) => r.id === id ? updatedItem : r);
+
+    logAuditEvent({
+      eventType: AUDIT_EVENT_TYPES.REJECT,
+      targetType: 'record',
+      targetId: id,
+      beforeData: item,
+      afterData: updatedItem,
+      metadata: {
+        comment: approvalComment,
+        role: approvalRole,
+        ship: item.ship,
+        partName: item.partName,
+      },
+      operator: approvalRole,
+    });
+
     persist(next);
     if (selectedApproval?.id === id) {
       setSelectedApproval(next.find((r) => r.id === id));
@@ -1602,12 +1830,12 @@ function App() {
       createdAt: new Date().toISOString()
     };
     persistDist([distRecord, ...distRecords]);
-    const updatedRecords = records.map((item) => item.id === distForm.applicationId ? {
-      ...item,
+    const updatedItem = {
+      ...application,
       status: '已发放',
       hasBeenDispatched: true,
       distribution: distRecord,
-      timeline: [...(item.timeline || []), { 
+      timeline: [...(application.timeline || []), { 
         status: '已发放', 
         at: today, 
         by: distForm.distributor || '操作员',
@@ -1616,7 +1844,27 @@ function App() {
         comment: distForm.distNote || '',
         action: 'dispatch'
       }]
-    } : item);
+    };
+    const updatedRecords = records.map((item) => item.id === distForm.applicationId ? updatedItem : item);
+
+    logAuditEvent({
+      eventType: AUDIT_EVENT_TYPES.DISPATCH,
+      targetType: 'record',
+      targetId: distForm.applicationId,
+      beforeData: application,
+      afterData: updatedItem,
+      metadata: {
+        distQty: distForm.distQty,
+        receiver: distForm.receiver || '',
+        distributor: distForm.distributor || '操作员',
+        note: distForm.distNote || '',
+        distRecordId: distRecord.id,
+        ship: application.ship,
+        partName: application.partName,
+      },
+      operator: distForm.distributor || operatorName,
+    });
+
     persist(updatedRecords);
     if (selected?.id === distForm.applicationId) {
       setSelected(updatedRecords.find((item) => item.id === distForm.applicationId));
@@ -1967,7 +2215,29 @@ function App() {
           同步管理
           {pendingCount > 0 && <span className="tab-badge">{pendingCount}</span>}
         </button>
+        <button
+          className={'tab ' + (activeTab === 'audit' ? 'tab-active' : '')}
+          onClick={() => setActiveTab('audit')}
+        >
+          <Activity size={16} />
+          审计与迁移
+        </button>
       </div>
+
+      {showMigrationAlert && migrationStatus && (
+        <div className={'migration-alert ' + (migrationStatus.success ? 'migration-success' : 'migration-error')}>
+          <div className="migration-alert-left">
+            {migrationStatus.success ? <CheckCircle size={18} /> : <AlertOctagon size={18} />}
+            <span>
+              {migrationStatus.message}
+              {migrationStatus.success && migrationStatus.migrated && `（已自动备份：v${migrationStatus.fromVersion}）`}
+            </span>
+          </div>
+          <button className="migration-alert-close" onClick={() => setShowMigrationAlert(false)}>
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <div className="sync-status-bar">
         <div className="sync-status-left">
@@ -1995,8 +2265,26 @@ function App() {
               </span>
             </>
           )}
+          <span className="sync-status-divider">|</span>
+          <span className="sync-status-text">
+            <Database size={12} /> 数据版本 <strong>v{dataVersion}</strong>
+          </span>
         </div>
         <div className="sync-status-right">
+          <span className="operator-label">
+            <UserCheck size={12} /> 操作人:
+          </span>
+          <input
+            type="text"
+            className="operator-input"
+            value={operatorName}
+            onChange={(e) => {
+              setOperatorName(e.target.value);
+              setOperator(e.target.value);
+            }}
+            placeholder="输入操作人姓名"
+            maxLength={20}
+          />
           <button
             className="sync-toggle-btn"
             onClick={toggleForceOffline}
@@ -2242,11 +2530,138 @@ function App() {
                   <h3>{selected.partName}</h3>
                   <p>{`${selected.system} · ${selected.location} · ${selected.urgency}紧急`}</p>
                   <p>{`数量${selected.qty}｜${selected.reason}`}</p>
-                  <div className="timeline">
-                    {(selected.timeline || []).map((step, index) => (
-                      <span key={index}>{step.at} · {step.status} · {step.by}</span>
-                    ))}
+                  <div className="detail-actions-bar">
+                    <div className="detail-section-title">
+                      <Activity size={16} />
+                      <strong>完整操作历史</strong>
+                    </div>
+                    <button
+                      type="button"
+                      className="detail-export-btn"
+                      onClick={() => {
+                        const events = getAuditEventsByTarget('record', selected.id);
+                        if (events.length === 0) {
+                          alert('当前申请暂无审计日志记录。');
+                          return;
+                        }
+                        const filterOptions = {
+                          targetType: 'record',
+                        };
+                        downloadAuditLogCSV(filterOptions);
+                      }}
+                    >
+                      <Download size={12} />
+                      导出申请审计日志
+                    </button>
                   </div>
+                  {(() => {
+                    const auditEvents = getAuditEventsByTarget('record', selected.id);
+                    const timelineEvents = (selected.timeline || []).map((step, idx) => ({
+                      id: `timeline_${idx}`,
+                      source: 'timeline',
+                      timestamp: step.at ? (step.at.includes('T') ? step.at : new Date(step.at).toISOString()) : new Date().toISOString(),
+                      timestampMs: step.at ? new Date(step.at.includes('T') ? step.at : step.at).getTime() : Date.now(),
+                      eventType: step.action || (
+                        step.status === '已批准' ? 'approve' :
+                        step.status === '已驳回' ? 'reject' :
+                        step.status === '已发放' ? 'dispatch' :
+                        step.status === '采购中' ? 'purchase-create' :
+                        step.status === '已到货' ? 'purchase-arrive' :
+                        step.status === '待审批' ? 'create' : 'update'
+                      ),
+                      operator: step.by || '系统',
+                      status: step.status,
+                      comment: step.comment,
+                      approvedQty: step.approvedQty,
+                      distQty: step.distQty,
+                      receiver: step.receiver,
+                    }));
+                    const allEvents = [
+                      ...timelineEvents,
+                      ...auditEvents.map((e) => ({
+                        ...e,
+                        source: 'audit',
+                        timestampMs: e.timestampMs || new Date(e.timestamp).getTime(),
+                      })),
+                    ].sort((a, b) => a.timestampMs - b.timestampMs);
+
+                    const seen = new Set();
+                    const mergedEvents = allEvents.filter((e) => {
+                      const key = `${e.eventType}_${e.timestampMs}_${e.operator}`;
+                      if (seen.has(key)) return false;
+                      seen.add(key);
+                      return true;
+                    });
+
+                    const getEventIcon = (eventType) => {
+                      switch (eventType) {
+                        case 'create': return <Plus size={14} />;
+                        case 'approve': return <CheckCircle size={14} />;
+                        case 'reject': return <XCircle size={14} />;
+                        case 'dispatch': return <Truck size={14} />;
+                        case 'delete': return <Trash2 size={14} />;
+                        case 'import': return <Upload size={14} />;
+                        case 'purchase-create': return <ShoppingCart size={14} />;
+                        case 'purchase-update': return <RefreshCw size={14} />;
+                        case 'purchase-arrive': return <Package size={14} />;
+                        case 'migration': return <Database size={14} />;
+                        default: return <Activity size={14} />;
+                      }
+                    };
+
+                    const getEventClass = (eventType) => {
+                      switch (eventType) {
+                        case 'create': return 'audit-ev-create';
+                        case 'approve': return 'audit-ev-approve';
+                        case 'reject': return 'audit-ev-reject';
+                        case 'dispatch': return 'audit-ev-dispatch';
+                        case 'delete': return 'audit-ev-delete';
+                        case 'import': return 'audit-ev-import';
+                        case 'purchase-create':
+                        case 'purchase-update':
+                        case 'purchase-arrive': return 'audit-ev-purchase';
+                        case 'migration': return 'audit-ev-migration';
+                        default: return '';
+                      }
+                    };
+
+                    return (
+                      <div className="audit-timeline">
+                        {mergedEvents.length === 0 && <p className="empty">暂无操作记录</p>}
+                        {mergedEvents.map((ev, idx) => (
+                          <div key={ev.id || idx} className={'audit-timeline-item ' + getEventClass(ev.eventType)}>
+                            <div className="audit-timeline-dot">
+                              {getEventIcon(ev.eventType)}
+                            </div>
+                            <div className="audit-timeline-content">
+                              <div className="audit-timeline-header">
+                                <span className="audit-timeline-type">
+                                  {AUDIT_EVENT_LABELS[ev.eventType] || ev.status || ev.eventType}
+                                </span>
+                                <span className="audit-timeline-meta">
+                                  {new Date(ev.timestampMs).toLocaleString('zh-CN')} · {ev.operator}
+                                </span>
+                              </div>
+                              {ev.status && <p className="audit-timeline-status">状态：{ev.status}</p>}
+                              {ev.comment && <p className="audit-timeline-comment">意见：{ev.comment}</p>}
+                              {ev.approvedQty && <p className="audit-timeline-detail">批准数量：{ev.approvedQty}</p>}
+                              {ev.distQty && <p className="audit-timeline-detail">发放数量：{ev.distQty}</p>}
+                              {ev.receiver && <p className="audit-timeline-detail">领取人：{ev.receiver}</p>}
+                              {ev.metadata && typeof ev.metadata === 'object' && Object.keys(ev.metadata).length > 0 && ev.source === 'audit' && (
+                                <div className="audit-timeline-meta-box">
+                                  {Object.entries(ev.metadata).map(([k, v]) => (
+                                    <span key={k} className="audit-meta-tag">
+                                      {k}: {String(v).slice(0, 50)}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   {selected.distribution && (
                     <div className="dist-section">
                       <div className="dist-section-title">
@@ -4612,6 +5027,436 @@ function App() {
           </div>
         </div>
       )}
+      {activeTab === 'audit' && (
+        <>
+          <section className="metrics">
+            {(() => {
+              const stats = getAuditStats();
+              const auditMetrics = [
+                { label: '审计事件总数', value: stats.total, icon: <Activity size={16} /> },
+                { label: '近7天事件', value: stats.last7Days, icon: <Clock size={16} /> },
+                { label: '数据版本', value: `v${dataVersion}/v${CURRENT_DATA_VERSION}`, icon: <Database size={16} /> },
+                { label: '备份数量', value: listBackups().length, icon: <Save size={16} /> },
+              ];
+              return auditMetrics.map((metric) => (
+                <article className="metric" key={metric.label}>
+                  <span>{metric.icon} {metric.label}</span>
+                  <strong>{metric.value}</strong>
+                </article>
+              ));
+            })()}
+          </section>
+
+          <section className="workspace">
+            <section className="panel" style={{ flex: '0 0 280px' }}>
+              <div className="panel-title">
+                <Layers size={18} />
+                <h2>功能导航</h2>
+              </div>
+              <div className="audit-sub-tabs">
+                <button
+                  className={'audit-sub-tab ' + (auditTab === 'overview' ? 'audit-sub-tab-active' : '')}
+                  onClick={() => setAuditTab('overview')}
+                >
+                  <BarChart3 size={14} /> 审计总览
+                </button>
+                <button
+                  className={'audit-sub-tab ' + (auditTab === 'logs' ? 'audit-sub-tab-active' : '')}
+                  onClick={() => setAuditTab('logs')}
+                >
+                  <FileText size={14} /> 审计日志
+                </button>
+                <button
+                  className={'audit-sub-tab ' + (auditTab === 'migration' ? 'audit-sub-tab-active' : '')}
+                  onClick={() => setAuditTab('migration')}
+                >
+                  <Database size={14} /> 迁移与备份
+                </button>
+              </div>
+
+              {auditTab === 'logs' && (
+                <div className="audit-filters">
+                  <h4>筛选条件</h4>
+                  <label>
+                    <span>事件类型</span>
+                    <select
+                      value={auditFilters.eventType}
+                      onChange={(e) => setAuditFilters({ ...auditFilters, eventType: e.target.value })}
+                    >
+                      <option value="全部">全部类型</option>
+                      {Object.entries(AUDIT_EVENT_LABELS).map(([key, label]) => (
+                        <option key={key} value={key}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>操作人</span>
+                    <input
+                      type="text"
+                      value={auditFilters.operator}
+                      onChange={(e) => setAuditFilters({ ...auditFilters, operator: e.target.value })}
+                      placeholder="搜索操作人姓名"
+                    />
+                  </label>
+                  <label>
+                    <span>开始日期</span>
+                    <input
+                      type="date"
+                      value={auditFilters.startDate}
+                      onChange={(e) => setAuditFilters({ ...auditFilters, startDate: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <span>结束日期</span>
+                    <input
+                      type="date"
+                      value={auditFilters.endDate}
+                      onChange={(e) => setAuditFilters({ ...auditFilters, endDate: e.target.value })}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="primary audit-export-btn"
+                    onClick={() => downloadAuditLogCSV({
+                      eventType: auditFilters.eventType === '全部' ? null : auditFilters.eventType,
+                      operator: auditFilters.operator || null,
+                      startDate: auditFilters.startDate || null,
+                      endDate: auditFilters.endDate || null,
+                    })}
+                  >
+                    <Download size={14} /> 导出筛选结果 (CSV)
+                  </button>
+                  <button
+                    type="button"
+                    className="audit-export-btn"
+                    onClick={() => downloadAuditLogCSV({})}
+                  >
+                    <Download size={14} /> 导出全部审计日志
+                  </button>
+                </div>
+              )}
+            </section>
+
+            {auditTab === 'overview' && (
+              <section className="panel detail-panel">
+                <div className="panel-title">
+                  <BarChart3 size={18} />
+                  <h2>审计数据总览</h2>
+                </div>
+                {(() => {
+                  const stats = getAuditStats();
+                  const typeLabels = AUDIT_EVENT_LABELS;
+                  return (
+                    <div className="audit-overview">
+                      <div className="audit-overview-section">
+                        <h3>事件类型分布</h3>
+                        <div className="audit-type-stats">
+                          {Object.entries(stats.byType).length === 0 && (
+                            <p className="empty">暂无审计数据，请先进行一些操作</p>
+                          )}
+                          {Object.entries(stats.byType).map(([type, count]) => (
+                            <div key={type} className="audit-type-stat-item">
+                              <span className="audit-type-stat-label">
+                                {typeLabels[type] || type}
+                              </span>
+                              <div className="audit-type-stat-bar-wrap">
+                                <div
+                                  className="audit-type-stat-bar"
+                                  style={{ width: `${Math.min(100, (count / Math.max(...Object.values(stats.byType), 1)) * 100)}%` }}
+                                />
+                              </div>
+                              <strong className="audit-type-stat-count">{count}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="audit-overview-section">
+                        <h3>操作人排行</h3>
+                        <div className="audit-operator-stats">
+                          {Object.entries(stats.byOperator).length === 0 && (
+                            <p className="empty">暂无操作数据</p>
+                          )}
+                          {Object.entries(stats.byOperator)
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, 10)
+                            .map(([op, count]) => (
+                              <div key={op} className="audit-operator-stat-item">
+                                <UserCheck size={14} />
+                                <span className="audit-operator-name">{op || '未命名'}</span>
+                                <strong>{count} 次</strong>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+
+                      <div className="audit-overview-section">
+                        <h3>最近操作（20条）</h3>
+                        <div className="audit-recent-list">
+                          {(() => {
+                            const recent = queryAuditEvents({ limit: 20 });
+                            if (recent.length === 0) return <p className="empty">暂无操作记录</p>;
+                            return recent.map((ev) => (
+                              <div key={ev.id} className="audit-recent-item">
+                                <span className={'audit-recent-type audit-recent-type-' + ev.eventType}>
+                                  {typeLabels[ev.eventType] || ev.eventType}
+                                </span>
+                                <span className="audit-recent-target">
+                                  {ev.targetType === 'record' ? '申请' : ev.targetType === 'purchase' ? '采购' : ev.targetType}
+                                  :{ev.targetId.slice(0, 8)}
+                                </span>
+                                <span className="audit-recent-op">{ev.operator}</span>
+                                <span className="audit-recent-time">
+                                  {new Date(ev.timestampMs).toLocaleString('zh-CN')}
+                                </span>
+                              </div>
+                            ));
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </section>
+            )}
+
+            {auditTab === 'logs' && (
+              <section className="panel detail-panel">
+                <div className="panel-title">
+                  <FileText size={18} />
+                  <h2>审计日志明细</h2>
+                </div>
+                {(() => {
+                  const events = queryAuditEvents({
+                    eventType: auditFilters.eventType === '全部' ? null : auditFilters.eventType,
+                    operator: auditFilters.operator || null,
+                    startDate: auditFilters.startDate || null,
+                    endDate: auditFilters.endDate || null,
+                    limit: 500,
+                  });
+                  return (
+                    <div className="audit-log-list">
+                      {events.length === 0 && <p className="empty">无符合条件的审计日志</p>}
+                      {events.map((ev) => {
+                        const isExpanded = expandedAuditEvents[ev.id];
+                        return (
+                          <div key={ev.id} className={'audit-log-item ' + (isExpanded ? 'audit-log-expanded' : '')}>
+                            <div
+                              className="audit-log-header"
+                              onClick={() => setExpandedAuditEvents({
+                                ...expandedAuditEvents,
+                                [ev.id]: !isExpanded,
+                              })}
+                            >
+                              <span className="audit-log-toggle">
+                                {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                              </span>
+                              <span className={'audit-log-type audit-log-type-' + ev.eventType}>
+                                {AUDIT_EVENT_LABELS[ev.eventType] || ev.eventType}
+                              </span>
+                              <span className="audit-log-target">
+                                <strong>{ev.targetType === 'record' ? '备件申请' : ev.targetType === 'purchase' ? '采购任务' : ev.targetType === 'system' ? '系统' : ev.targetType}</strong>
+                                <span className="audit-log-target-id">#{ev.targetId.slice(0, 12)}</span>
+                              </span>
+                              <span className="audit-log-operator">
+                                <UserCheck size={12} /> {ev.operator || '系统'}
+                              </span>
+                              <span className="audit-log-time">
+                                <Clock size={12} /> {new Date(ev.timestampMs).toLocaleString('zh-CN')}
+                              </span>
+                            </div>
+                            {isExpanded && (
+                              <div className="audit-log-detail">
+                                {ev.metadata && Object.keys(ev.metadata).length > 0 && (
+                                  <div className="audit-log-meta-section">
+                                    <h5>附加信息</h5>
+                                    <div className="audit-log-meta-grid">
+                                      {Object.entries(ev.metadata).map(([k, v]) => (
+                                        <div key={k} className="audit-log-meta-item">
+                                          <span className="audit-log-meta-key">{k}</span>
+                                          <span className="audit-log-meta-value">
+                                            {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {ev.beforeData && (
+                                  <div className="audit-log-data-section">
+                                    <h5>变更前</h5>
+                                    <pre className="audit-log-data-pre">{JSON.stringify(ev.beforeData, null, 2)}</pre>
+                                  </div>
+                                )}
+                                {ev.afterData && (
+                                  <div className="audit-log-data-section">
+                                    <h5>变更后</h5>
+                                    <pre className="audit-log-data-pre">{JSON.stringify(ev.afterData, null, 2)}</pre>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </section>
+            )}
+
+            {auditTab === 'migration' && (
+              <section className="panel detail-panel">
+                <div className="panel-title">
+                  <Database size={18} />
+                  <h2>数据迁移与备份管理</h2>
+                </div>
+                <div className="migration-panel">
+                  <div className="migration-section">
+                    <div className="migration-section-head">
+                      <h3>当前数据状态</h3>
+                    </div>
+                    <div className="migration-status-grid">
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">当前数据版本</span>
+                        <strong className="migration-status-value">v{dataVersion}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">最新系统版本</span>
+                        <strong className="migration-status-value">v{CURRENT_DATA_VERSION}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">迁移状态</span>
+                        <strong className={'migration-status-value ' + (dataVersion >= CURRENT_DATA_VERSION ? 'status-ok' : 'status-warn')}>
+                          {dataVersion >= CURRENT_DATA_VERSION ? '已是最新' : '需要升级'}
+                        </strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">申请记录数</span>
+                        <strong className="migration-status-value">{records.length}</strong>
+                      </div>
+                    </div>
+                    {dataVersion < CURRENT_DATA_VERSION && (
+                      <button
+                        type="button"
+                        className="primary migration-run-btn"
+                        onClick={() => {
+                          const result = runMigrations();
+                          setMigrationStatus(result);
+                          setDataVersion(getDataVersion());
+                          setShowMigrationAlert(true);
+                          if (result.success) {
+                            setRecords(loadRecords());
+                            setInventory(loadInventory());
+                            setTemplates(loadTemplates());
+                            setPurchases(loadPurchases());
+                          }
+                        }}
+                      >
+                        <RefreshCw size={14} /> 立即执行数据迁移
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="migration-section">
+                    <div className="migration-section-head">
+                      <h3>数据备份（最近10个）</h3>
+                      <button
+                        type="button"
+                        className="migration-backup-btn"
+                        onClick={() => {
+                          const result = runMigrations();
+                          if (!result.migrated && result.success) {
+                            alert('手动备份：数据已在迁移时自动备份。当前无待迁移内容，您可以通过刷新触发迁移流程自动备份。');
+                          }
+                        }}
+                      >
+                        <Save size={14} /> 查看备份说明
+                      </button>
+                    </div>
+                    <div className="backup-list">
+                      {listBackups().length === 0 && <p className="empty">暂无备份记录，迁移时会自动创建备份</p>}
+                      {listBackups().map((bk) => (
+                        <div key={bk.key} className="backup-item">
+                          <div className="backup-info">
+                            <Save size={16} />
+                            <span className="backup-time">
+                              备份时间：{new Date(bk.timestamp).toLocaleString('zh-CN')}
+                            </span>
+                            <span className="backup-key">{bk.key.replace('hxwl-61307-backup-', '')}</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="backup-restore-btn"
+                            onClick={() => {
+                              if (confirm('确认恢复此备份？这将覆盖当前所有业务数据！')) {
+                                const result = restoreBackup(bk.key);
+                                if (result.success) {
+                                  alert('备份已成功恢复！页面将刷新以加载恢复后的数据。');
+                                  setRecords(loadRecords());
+                                  setInventory(loadInventory());
+                                  setTemplates(loadTemplates());
+                                  setPurchases(loadPurchases());
+                                  setDataVersion(getDataVersion());
+                                } else {
+                                  alert('恢复失败：' + result.error);
+                                }
+                              }
+                            }}
+                          >
+                            <RotateCcw size={14} /> 恢复此备份
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="migration-section">
+                    <div className="migration-section-head">
+                      <h3>迁移日志</h3>
+                    </div>
+                    <div className="migration-log-list">
+                      {getMigrationLog().length === 0 && <p className="empty">暂无迁移日志</p>}
+                      {getMigrationLog().slice(-20).reverse().map((log) => (
+                        <div key={log.id} className={'migration-log-item ' + (log.success ? '' : 'migration-log-error')}>
+                          <div className="migration-log-header">
+                            {log.type === 'migration' ? (
+                              log.success ? <CheckCircle size={16} /> : <XCircle size={16} />
+                            ) : log.type === 'backup' ? (
+                              <Save size={16} />
+                            ) : log.type === 'restore' ? (
+                              <RotateCcw size={16} />
+                            ) : (
+                              <Activity size={16} />
+                            )}
+                            <span className="migration-log-type">
+                              {log.type === 'migration' ? '数据迁移' :
+                               log.type === 'backup' ? '创建备份' :
+                               log.type === 'restore' ? '恢复备份' : log.type}
+                            </span>
+                            <span className="migration-log-time">{new Date(log.timestamp).toLocaleString('zh-CN')}</span>
+                          </div>
+                          <div className="migration-log-body">
+                            {log.fromVersion !== undefined && (
+                              <span>v{log.fromVersion} → v{log.toVersion}</span>
+                            )}
+                            {log.error && <span className="migration-log-error-text">错误: {log.error}</span>}
+                            {log.rollbackSuccess !== undefined && (
+                              <span>回滚: {log.rollbackSuccess ? '成功' : '失败'}</span>
+                            )}
+                            {log.backupKey && <span>备份: {log.backupKey.replace('hxwl-61307-backup-', '')}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
+          </section>
+        </>
+      )}
+
     </main>
   );
 }
