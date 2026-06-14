@@ -603,21 +603,91 @@ function App() {
     return null;
   }
 
+  function trimField(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).replace(/^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g, '');
+  }
+
   function parseCSV(text) {
-    const lines = text.trim().split(/\r?\n/).filter(line => line.trim());
-    if (lines.length < 2) {
+    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/^\ufeff/, '');
+    if (!normalizedText.trim()) {
       return { headers: [], rows: [] };
     }
 
-    const delimiter = lines[0].includes('\t') ? '\t' : (lines[0].includes(';') ? ';' : ',');
-    const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
-    const rows = lines.slice(1).map(line => {
-      const values = line.split(delimiter).map(v => v.trim().replace(/^["']|["']$/g, ''));
-      const row = {};
-      headers.forEach((header, i) => {
-        row[header] = values[i] || '';
+    const firstLineEnd = normalizedText.search(/\n/);
+    const firstLine = firstLineEnd !== -1 ? normalizedText.slice(0, firstLineEnd) : normalizedText;
+    const delimiter = firstLine.includes('\t') ? '\t' : (firstLine.includes(';') ? ';' : ',');
+
+    const allRows = [];
+    let currentField = '';
+    let inQuotes = false;
+    let i = 0;
+    let currentRow = [];
+    let fieldStartInQuotes = false;
+
+    while (i < normalizedText.length) {
+      const char = normalizedText[i];
+      const nextChar = normalizedText[i + 1];
+
+      if (inQuotes) {
+        if (char === '"' && nextChar === '"') {
+          currentField += '"';
+          i += 2;
+        } else if (char === '"') {
+          inQuotes = false;
+          i++;
+          while (i < normalizedText.length && (normalizedText[i] === ' ' || normalizedText[i] === '\t')) {
+            i++;
+          }
+        } else {
+          currentField += char;
+          i++;
+        }
+      } else {
+        if (!fieldStartInQuotes && currentField === '' && (char === ' ' || char === '\t')) {
+          i++;
+        } else if (char === '"' && currentField.trim() === '') {
+          currentField = '';
+          fieldStartInQuotes = true;
+          inQuotes = true;
+          i++;
+        } else if (char === delimiter) {
+          currentRow.push(fieldStartInQuotes ? currentField : trimField(currentField));
+          currentField = '';
+          fieldStartInQuotes = false;
+          i++;
+        } else if (char === '\n') {
+          currentRow.push(fieldStartInQuotes ? currentField : trimField(currentField));
+          allRows.push(currentRow);
+          currentRow = [];
+          currentField = '';
+          fieldStartInQuotes = false;
+          i++;
+        } else {
+          currentField += char;
+          i++;
+        }
+      }
+    }
+
+    if (currentField !== '' || currentRow.length > 0) {
+      currentRow.push(fieldStartInQuotes ? currentField : trimField(currentField));
+      allRows.push(currentRow);
+    }
+
+    const nonEmptyRows = allRows.filter(row => row.some(cell => trimField(cell) !== ''));
+    if (nonEmptyRows.length < 2) {
+      return { headers: [], rows: [] };
+    }
+
+    const headers = nonEmptyRows[0].map(h => trimField(h));
+    const rows = nonEmptyRows.slice(1).map(row => {
+      const obj = {};
+      headers.forEach((header, idx) => {
+        const rawValue = row[idx] !== undefined ? row[idx] : '';
+        obj[header] = trimField(rawValue);
       });
-      return row;
+      return obj;
     });
 
     return { headers, rows };
@@ -816,12 +886,21 @@ function App() {
     setActiveTab('application');
   }
 
+  function escapeCSVField(field, delimiter = ',') {
+    const str = String(field ?? '');
+    if (str.includes(delimiter) || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }
+
   function getSampleCSV() {
-    const headers = appConfig.fields.map(f => f.label).join(',');
+    const delimiter = ',';
+    const headers = appConfig.fields.map(f => escapeCSVField(f.label, delimiter)).join(delimiter);
     const sampleRow = appConfig.fields.map(f => {
-      if (f.type === 'select') return f.options[0] || '';
-      return f.placeholder || '';
-    }).join(',');
+      const value = f.type === 'select' ? (f.options[0] || '') : (f.placeholder || '');
+      return escapeCSVField(value, delimiter);
+    }).join(delimiter);
     return `${headers}\n${sampleRow}`;
   }
 
@@ -3239,7 +3318,7 @@ function App() {
                       className="import-textarea"
                       value={importText}
                       onChange={handlePaste}
-                      placeholder="所属船舶,备件名称,设备系统,船舶位置,需求数量,紧急程度,申请原因&#10;远洋一号,海水泵密封圈,机舱,二副库,2,高,巡检发现渗漏，需预防性更换&#10;海运之星,甲板照明灯泡,电气,甲板库,12,中,夜航照明备货"
+                      placeholder="所属船舶,备件名称,设备系统,船舶位置,需求数量,紧急程度,申请原因&#10;远洋一号,海水泵密封圈,机舱,二副库,2,高,&quot;巡检发现渗漏,需预防性更换,立即处理&quot;&#10;海运之星,甲板照明灯泡,电气,甲板库,12,中,夜航照明备货"
                       rows={8}
                     />
                   </label>
