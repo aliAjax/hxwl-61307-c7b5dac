@@ -1484,20 +1484,31 @@ function App() {
 
   function addPurchase(event) {
     event.preventDefault();
-    if (!purchaseForm.applicationId) return;
-    const application = records.find((item) => item.id === purchaseForm.applicationId);
+    const formData = new FormData(event.currentTarget);
+    const submittedPurchaseForm = {
+      ...purchaseForm,
+      applicationId: formData.get('applicationId') || purchaseForm.applicationId,
+      supplier: formData.get('supplier') || purchaseForm.supplier,
+      purchaseQty: formData.get('purchaseQty') || purchaseForm.purchaseQty,
+      etaDate: formData.get('etaDate') || purchaseForm.etaDate,
+      arrivalDate: formData.get('arrivalDate') || purchaseForm.arrivalDate,
+      purchaseNote: formData.get('purchaseNote') || purchaseForm.purchaseNote,
+    };
+    if (!submittedPurchaseForm.applicationId) return;
+    const application = records.find((item) => item.id === submittedPurchaseForm.applicationId);
     if (!application) return;
     if (!needsPurchase(application)) {
       alert('该申请库存充足，无需创建采购任务。');
       return;
     }
 
-    const directArrival = !!purchaseForm.arrivalDate;
+    const purchaseId = uid();
+    const directArrival = !!submittedPurchaseForm.arrivalDate;
     let inventoryResult = null;
     let finalPurchaseRecord = null;
 
     if (directArrival) {
-      const purchaseQty = Number(purchaseForm.purchaseQty || application.approvedQty || application.qty) || 0;
+      const purchaseQty = Number(submittedPurchaseForm.purchaseQty || application.approvedQty || application.qty) || 0;
       const invMatch = inventory.find((inv) =>
         inv.ship === application.ship &&
         inv.partName === application.partName &&
@@ -1514,9 +1525,9 @@ function App() {
         stockAfter: afterStock,
         reason: '采购到货入库',
         sourceType: 'purchase',
-        sourceId: '',
-        applicationId: purchaseForm.applicationId || '',
-        supplier: purchaseForm.supplier || '',
+        sourceId: purchaseId,
+        applicationId: submittedPurchaseForm.applicationId || '',
+        supplier: submittedPurchaseForm.supplier || '',
         at: today,
         by: operatorName,
       };
@@ -1562,8 +1573,9 @@ function App() {
           stockBefore: beforeStock,
           stockAfter: afterStock,
           reason: '采购到货入库',
-          applicationId: purchaseForm.applicationId,
-          supplier: purchaseForm.supplier,
+          purchaseId,
+          applicationId: submittedPurchaseForm.applicationId,
+          supplier: submittedPurchaseForm.supplier,
           ship: application.ship,
           partName: application.partName,
           system: application.system,
@@ -1581,7 +1593,6 @@ function App() {
       };
     }
 
-    const purchaseId = uid();
     if (inventoryResult) {
       inventoryResult.movementId && (() => {
         const inv = inventory.find(i => i.id === inventoryResult.inventoryId) || inventoryResult._updatedInv;
@@ -1594,18 +1605,18 @@ function App() {
 
     const purchaseRecord = {
       id: purchaseId,
-      applicationId: purchaseForm.applicationId,
+      applicationId: submittedPurchaseForm.applicationId,
       ship: application.ship,
       partName: application.partName,
       system: application.system,
       location: application.location,
       qty: application.qty,
       urgency: application.urgency,
-      supplier: purchaseForm.supplier,
-      purchaseQty: purchaseForm.purchaseQty || application.approvedQty || application.qty,
-      etaDate: purchaseForm.etaDate,
-      arrivalDate: purchaseForm.arrivalDate || '',
-      purchaseNote: purchaseForm.purchaseNote,
+      supplier: submittedPurchaseForm.supplier,
+      purchaseQty: submittedPurchaseForm.purchaseQty || application.approvedQty || application.qty,
+      etaDate: submittedPurchaseForm.etaDate,
+      arrivalDate: submittedPurchaseForm.arrivalDate || '',
+      purchaseNote: submittedPurchaseForm.purchaseNote,
       status: directArrival ? '已到货' : '待下单',
       inventoryRecorded: directArrival ? true : false,
       inventoryId: inventoryResult?.inventoryId,
@@ -1614,7 +1625,7 @@ function App() {
         status: directArrival ? '已到货' : '待下单',
         at: today,
         by: '操作员',
-        comment: purchaseForm.purchaseNote || '',
+        comment: submittedPurchaseForm.purchaseNote || '',
         action: directArrival ? 'arrive' : 'create',
         ...(inventoryResult ? {
           inventoryId: inventoryResult.inventoryId,
@@ -1660,7 +1671,7 @@ function App() {
     }
 
     persistPurchases([purchaseRecord, ...purchases]);
-    const appBefore = records.find((item) => item.id === purchaseForm.applicationId);
+    const appBefore = records.find((item) => item.id === submittedPurchaseForm.applicationId);
     const timelineAdditions = [];
     if (directArrival && inventoryResult) {
       timelineAdditions.push({
@@ -1679,7 +1690,7 @@ function App() {
         status: '已到货',
         at: today,
         by: '系统',
-        comment: `采购已到货，数量：${purchaseRecord.purchaseQty}，${purchaseForm.purchaseNote || ''}`,
+        comment: `采购已到货，数量：${purchaseRecord.purchaseQty}，${submittedPurchaseForm.purchaseNote || ''}`,
         action: 'purchase-arrive'
       });
     }
@@ -1687,11 +1698,11 @@ function App() {
       status: '采购中',
       at: today,
       by: '系统',
-      comment: `已创建采购任务，供应商：${purchaseForm.supplier}，采购数量：${purchaseRecord.purchaseQty}`,
+      comment: `已创建采购任务，供应商：${submittedPurchaseForm.supplier}，采购数量：${purchaseRecord.purchaseQty}`,
       action: 'purchase-create'
     });
 
-    const updatedRecords = records.map((item) => item.id === purchaseForm.applicationId ? {
+    const updatedRecords = records.map((item) => item.id === submittedPurchaseForm.applicationId ? {
       ...item,
       hasPurchase: true,
       purchaseStatus: purchaseRecord.status,
@@ -1704,10 +1715,10 @@ function App() {
       targetId: purchaseRecord.id,
       afterData: purchaseRecord,
       metadata: {
-        applicationId: purchaseForm.applicationId,
-        supplier: purchaseForm.supplier,
+        applicationId: submittedPurchaseForm.applicationId,
+        supplier: submittedPurchaseForm.supplier,
         purchaseQty: purchaseRecord.purchaseQty,
-        etaDate: purchaseForm.etaDate,
+        etaDate: submittedPurchaseForm.etaDate,
         ship: application.ship,
         partName: application.partName,
         ...(inventoryResult ? {
@@ -1721,18 +1732,18 @@ function App() {
     });
 
     if (directArrival && inventoryResult) {
-      const appAfter = updatedRecords.find((r) => r.id === purchaseForm.applicationId);
+      const appAfter = updatedRecords.find((r) => r.id === submittedPurchaseForm.applicationId);
       logAuditEvent({
         eventType: AUDIT_EVENT_TYPES.PURCHASE_ARRIVE,
         targetType: 'record',
-        targetId: purchaseForm.applicationId,
+        targetId: submittedPurchaseForm.applicationId,
         beforeData: appBefore,
         afterData: appAfter,
         metadata: {
           purchaseId: purchaseId,
           purchaseQty: purchaseRecord.purchaseQty,
-          arrivalDate: purchaseForm.arrivalDate,
-          comment: purchaseForm.purchaseNote || '',
+          arrivalDate: submittedPurchaseForm.arrivalDate,
+          comment: submittedPurchaseForm.purchaseNote || '',
           ship: application.ship,
           partName: application.partName,
           inventoryId: inventoryResult.inventoryId,
@@ -1745,8 +1756,8 @@ function App() {
     }
 
     persist(updatedRecords);
-    if (selected?.id === purchaseForm.applicationId) {
-      setSelected(updatedRecords.find((item) => item.id === purchaseForm.applicationId));
+    if (selected?.id === submittedPurchaseForm.applicationId) {
+      setSelected(updatedRecords.find((item) => item.id === submittedPurchaseForm.applicationId));
     }
     setPurchaseForm({ ...purchaseConfig.defaultValues, applicationId: '' });
     setSelectedPurchase(finalPurchaseRecord);
@@ -3559,6 +3570,7 @@ function App() {
                                 <label className="wide">
                                   <span>供应商</span>
                                   <select
+                                    name="supplier"
                                     value={purchaseForm.supplier}
                                     onChange={(event) => setPurchaseForm({ ...purchaseForm, supplier: event.target.value })}
                                   >
@@ -3571,6 +3583,7 @@ function App() {
                                 <label>
                                   <span>采购数量</span>
                                   <input
+                                    name="purchaseQty"
                                     type="number"
                                     value={purchaseForm.purchaseQty}
                                     onChange={(event) => setPurchaseForm({ ...purchaseForm, purchaseQty: event.target.value })}
@@ -3581,6 +3594,7 @@ function App() {
                                 <label>
                                   <span>预计到港日期</span>
                                   <input
+                                    name="etaDate"
                                     type="date"
                                     value={purchaseForm.etaDate}
                                     onChange={(event) => setPurchaseForm({ ...purchaseForm, etaDate: event.target.value })}
@@ -3589,6 +3603,7 @@ function App() {
                                 <label>
                                   <span>实际到货日期（可选）</span>
                                   <input
+                                    name="arrivalDate"
                                     type="date"
                                     value={purchaseForm.arrivalDate}
                                     onChange={(event) => setPurchaseForm({ ...purchaseForm, arrivalDate: event.target.value })}
@@ -3597,6 +3612,7 @@ function App() {
                                 <label className="wide">
                                   <span>采购备注</span>
                                   <textarea
+                                    name="purchaseNote"
                                     value={purchaseForm.purchaseNote}
                                     onChange={(event) => setPurchaseForm({ ...purchaseForm, purchaseNote: event.target.value })}
                                     placeholder="采购备注信息"
@@ -4696,6 +4712,7 @@ function App() {
                 <label className="wide">
                   <span>关联申请（已批准）</span>
                   <select
+                    name="applicationId"
                     value={purchaseForm.applicationId}
                     onChange={(event) => {
                       const appId = event.target.value;
@@ -4755,6 +4772,7 @@ function App() {
                 <label className="wide">
                   <span>供应商</span>
                   <select
+                    name="supplier"
                     value={purchaseForm.supplier}
                     onChange={(event) => setPurchaseForm({ ...purchaseForm, supplier: event.target.value })}
                   >
@@ -4767,6 +4785,7 @@ function App() {
                 <label>
                   <span>采购数量</span>
                   <input
+                    name="purchaseQty"
                     type="number"
                     value={purchaseForm.purchaseQty}
                     onChange={(event) => setPurchaseForm({ ...purchaseForm, purchaseQty: event.target.value })}
@@ -4777,6 +4796,7 @@ function App() {
                 <label>
                   <span>预计到港日期</span>
                   <input
+                    name="etaDate"
                     type="date"
                     value={purchaseForm.etaDate}
                     onChange={(event) => setPurchaseForm({ ...purchaseForm, etaDate: event.target.value })}
@@ -4785,6 +4805,7 @@ function App() {
                 <label>
                   <span>实际到货日期（可选）</span>
                   <input
+                    name="arrivalDate"
                     type="date"
                     value={purchaseForm.arrivalDate}
                     onChange={(event) => setPurchaseForm({ ...purchaseForm, arrivalDate: event.target.value })}
@@ -4793,6 +4814,7 @@ function App() {
                 <label className="wide">
                   <span>采购备注</span>
                   <textarea
+                    name="purchaseNote"
                     value={purchaseForm.purchaseNote}
                     onChange={(event) => setPurchaseForm({ ...purchaseForm, purchaseNote: event.target.value })}
                     placeholder="采购备注信息"
