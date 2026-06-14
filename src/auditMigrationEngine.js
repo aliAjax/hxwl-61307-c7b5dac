@@ -2,6 +2,8 @@ const DATA_VERSION_KEY = 'hxwl-61307-data-version';
 const DATA_BACKUP_PREFIX = 'hxwl-61307-backup-';
 const AUDIT_LOG_KEY = 'hxwl-61307-audit-log';
 const MIGRATION_LOG_KEY = 'hxwl-61307-migration-log';
+const TOMBSTONE = '__TOMBSTONE__';
+
 
 export const CURRENT_DATA_VERSION = 2;
 
@@ -103,16 +105,19 @@ function backupAllData() {
   const backup = {};
   Object.values(STORAGE_KEYS).forEach((key) => {
     const raw = localStorage.getItem(key);
-    if (raw !== null) {
-      backup[key] = raw;
-    }
+    backup[key] = raw === null ? TOMBSTONE : raw;
   });
   const backupKey = DATA_BACKUP_PREFIX + timestamp;
-  localStorage.setItem(backupKey, JSON.stringify({
-    timestamp,
-    version: getDataVersion(),
-    data: backup,
-  }));
+  try {
+    localStorage.setItem(backupKey, JSON.stringify({
+      timestamp,
+      version: getDataVersion(),
+      data: backup,
+    }));
+  } catch (e) {
+    console.error('写入备份失败：', e);
+    throw e;
+  }
   const backups = listBackups();
   backups.push({ key: backupKey, timestamp });
   const sorted = backups.sort((a, b) => b.timestamp - a.timestamp);
@@ -142,8 +147,14 @@ export function restoreBackup(backupKey) {
   if (!raw) return { success: false, error: '备份不存在' };
   try {
     const backup = JSON.parse(raw);
-    Object.entries(backup.data || {}).forEach(([key, value]) => {
-      localStorage.setItem(key, value);
+    const backupData = backup.data || {};
+    Object.values(STORAGE_KEYS).forEach((key) => {
+      const savedValue = backupData[key];
+      if (savedValue === undefined || savedValue === TOMBSTONE) {
+        localStorage.removeItem(key);
+      } else {
+        localStorage.setItem(key, savedValue);
+      }
     });
     if (backup.version !== undefined) {
       setDataVersion(backup.version);
@@ -313,13 +324,38 @@ export function runMigrations() {
     };
   }
 
-  const backupKey = backupAllData();
+  let backupKey = null;
   appendMigrationLog({
-    type: 'backup',
-    backupKey,
+    type: 'start',
     fromVersion: currentVersion,
     targetVersion: CURRENT_DATA_VERSION,
   });
+
+  try {
+    backupKey = backupAllData();
+    appendMigrationLog({
+      type: 'backup',
+      backupKey,
+      fromVersion: currentVersion,
+      targetVersion: CURRENT_DATA_VERSION,
+    });
+  } catch (backupError) {
+    appendMigrationLog({
+      type: 'backup',
+      fromVersion: currentVersion,
+      targetVersion: CURRENT_DATA_VERSION,
+      success: false,
+      error: backupError.message || String(backupError),
+    });
+    return {
+      success: false,
+      migrated: false,
+      fromVersion: currentVersion,
+      toVersion: currentVersion,
+      error: backupError.message || String(backupError),
+      message: `迁移备份失败，已中止迁移以保护数据。错误：${backupError.message || String(backupError)}`,
+    };
+  }
 
   let workingVersion = currentVersion;
   const appliedMigrations = [];
@@ -365,7 +401,10 @@ export function runMigrations() {
     };
   } catch (error) {
     console.error('数据迁移失败，正在回滚...', error);
-    const rollbackResult = rollbackFromBackup(backupKey);
+    let rollbackResult = { success: false, error: '未执行回滚' };
+    if (backupKey) {
+      rollbackResult = rollbackFromBackup(backupKey);
+    }
     appendMigrationLog({
       type: 'migration',
       fromVersion: currentVersion,
@@ -373,6 +412,7 @@ export function runMigrations() {
       success: false,
       error: error.message || String(error),
       rollbackSuccess: rollbackResult.success,
+      rollbackError: rollbackResult.error,
     });
     return {
       success: false,
@@ -382,7 +422,7 @@ export function runMigrations() {
       error: error.message || String(error),
       rollbackSuccess: rollbackResult.success,
       backupKey,
-      message: `迁移失败，已${rollbackResult.success ? '' : '尝试'}恢复到原始数据。错误：${error.message || String(error)}`,
+      message: `迁移失败，已${rollbackResult.success ? '成功' : '尝试'}恢复到原始数据。错误：${error.message || String(error)}${rollbackResult.success ? '' : `（回滚异常：${rollbackResult.error || '未知'}）`}`,
     };
   }
 }
@@ -434,6 +474,7 @@ export function getAuditEventsByTarget(targetType, targetId) {
 export function queryAuditEvents({
   eventType = null,
   targetType = null,
+  targetId = null,
   operator = null,
   startDate = null,
   endDate = null,
@@ -446,6 +487,9 @@ export function queryAuditEvents({
   }
   if (targetType) {
     log = log.filter((e) => e.targetType === targetType);
+  }
+  if (targetId) {
+    log = log.filter((e) => e.targetId === targetId);
   }
   if (operator) {
     log = log.filter((e) => (e.operator || '').includes(operator));

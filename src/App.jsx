@@ -39,6 +39,7 @@ import {
   queryAuditEvents,
   getAuditStats,
   downloadAuditLogCSV,
+  exportAuditLogToCSV,
   setOperator,
 } from './auditMigrationEngine';
 
@@ -2546,8 +2547,20 @@ function App() {
                         }
                         const filterOptions = {
                           targetType: 'record',
+                          targetId: selected.id,
                         };
-                        downloadAuditLogCSV(filterOptions);
+                        const csv = exportAuditLogToCSV(filterOptions);
+                        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        const dateStr = new Date().toISOString().slice(0, 10);
+                        const safePartName = (selected.partName || '申请').replace(/[\\/:*?"<>|]/g, '_');
+                        link.download = `审计日志_${safePartName}_${selected.id.slice(-6)}_${dateStr}.csv`;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(url);
                       }}
                     >
                       <Download size={12} />
