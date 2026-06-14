@@ -22,6 +22,7 @@ export const AUDIT_EVENT_TYPES = {
   UPDATE_STATUS: 'update_status',
   INVENTORY_DEDUCT: 'inventory_deduct',
   INVENTORY_RESTORE: 'inventory_restore',
+  INVENTORY_ADD: 'inventory_add',
 };
 
 export const AUDIT_EVENT_LABELS = {
@@ -39,6 +40,7 @@ export const AUDIT_EVENT_LABELS = {
   update_status: '状态变更',
   inventory_deduct: '库存扣减',
   inventory_restore: '库存恢复',
+  inventory_add: '采购入库',
 };
 
 export const STORAGE_KEYS = {

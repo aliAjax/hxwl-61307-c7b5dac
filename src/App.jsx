@@ -1,5 +1,5 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download, Wifi, WifiOff, Database, Cloud, CloudOff, AlertOctagon, ChevronDown, ChevronRight, Server, UserX, Layers, Activity, Save, RotateCcw, Hand } from 'lucide-react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, PackagePlus, MinusCircle, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download, Wifi, WifiOff, Database, Cloud, CloudOff, AlertOctagon, ChevronDown, ChevronRight, Server, UserX, Layers, Activity, Save, RotateCcw, Hand } from 'lucide-react';
 import './App.css';
 import {
   OP_TYPES,
@@ -1491,8 +1491,109 @@ function App() {
       alert('该申请库存充足，无需创建采购任务。');
       return;
     }
+
+    const directArrival = !!purchaseForm.arrivalDate;
+    let inventoryResult = null;
+    let finalPurchaseRecord = null;
+
+    if (directArrival) {
+      const purchaseQty = Number(purchaseForm.purchaseQty || application.approvedQty || application.qty) || 0;
+      const invMatch = inventory.find((inv) =>
+        inv.ship === application.ship &&
+        inv.partName === application.partName &&
+        inv.system === application.system &&
+        inv.location === application.location
+      );
+      const beforeStock = invMatch ? (Number(invMatch.currentStock) || 0) : 0;
+      const afterStock = beforeStock + purchaseQty;
+      const stockMovement = {
+        id: uid(),
+        type: 'purchase-in',
+        changeQty: purchaseQty,
+        stockBefore: beforeStock,
+        stockAfter: afterStock,
+        reason: '采购到货入库',
+        sourceType: 'purchase',
+        sourceId: '',
+        applicationId: purchaseForm.applicationId || '',
+        supplier: purchaseForm.supplier || '',
+        at: today,
+        by: operatorName,
+      };
+
+      let updatedInvItem;
+      let nextInventory;
+      if (invMatch) {
+        updatedInvItem = {
+          ...invMatch,
+          currentStock: String(afterStock),
+          lastCheckDate: today,
+          movements: [...(invMatch.movements || []), stockMovement],
+        };
+        nextInventory = inventory.map((inv) => inv.id === invMatch.id ? updatedInvItem : inv);
+      } else {
+        updatedInvItem = {
+          id: uid(),
+          ship: application.ship,
+          partName: application.partName,
+          system: application.system,
+          location: application.location,
+          currentStock: String(afterStock),
+          safetyStock: String(Math.ceil(purchaseQty * 0.5)),
+          lastCheckDate: today,
+          createdAt: new Date().toISOString(),
+          movements: [stockMovement],
+        };
+        nextInventory = [updatedInvItem, ...inventory];
+      }
+      persistInventory(nextInventory);
+      if (selectedInv?.id === updatedInvItem.id || (!invMatch && selectedInv === null)) {
+        setSelectedInv(updatedInvItem);
+      }
+
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.INVENTORY_ADD,
+        targetType: 'inventory',
+        targetId: updatedInvItem.id,
+        beforeData: invMatch || null,
+        afterData: updatedInvItem,
+        metadata: {
+          addQty: purchaseQty,
+          stockBefore: beforeStock,
+          stockAfter: afterStock,
+          reason: '采购到货入库',
+          applicationId: purchaseForm.applicationId,
+          supplier: purchaseForm.supplier,
+          ship: application.ship,
+          partName: application.partName,
+          system: application.system,
+          location: application.location,
+        },
+        operator: operatorName,
+      });
+
+      inventoryResult = {
+        inventoryId: updatedInvItem.id,
+        stockBefore: beforeStock,
+        stockAfter: afterStock,
+        inventoryChange: `+${purchaseQty}`,
+        movementId: stockMovement.id,
+      };
+    }
+
+    const purchaseId = uid();
+    if (inventoryResult) {
+      inventoryResult.movementId && (() => {
+        const inv = inventory.find(i => i.id === inventoryResult.inventoryId) || inventoryResult._updatedInv;
+        if (inv && inv.movements) {
+          const mv = inv.movements.find(m => m.id === inventoryResult.movementId);
+          if (mv) mv.sourceId = purchaseId;
+        }
+      })();
+    }
+
     const purchaseRecord = {
-      id: uid(),
+      id: purchaseId,
       applicationId: purchaseForm.applicationId,
       ship: application.ship,
       partName: application.partName,
@@ -1505,29 +1606,96 @@ function App() {
       etaDate: purchaseForm.etaDate,
       arrivalDate: purchaseForm.arrivalDate || '',
       purchaseNote: purchaseForm.purchaseNote,
-      status: purchaseForm.arrivalDate ? '已到货' : '待下单',
+      status: directArrival ? '已到货' : '待下单',
+      inventoryRecorded: directArrival ? true : false,
+      inventoryId: inventoryResult?.inventoryId,
       createdAt: new Date().toISOString(),
       timeline: [{
-        status: purchaseForm.arrivalDate ? '已到货' : '待下单',
+        status: directArrival ? '已到货' : '待下单',
         at: today,
         by: '操作员',
         comment: purchaseForm.purchaseNote || '',
-        action: purchaseForm.arrivalDate ? 'arrive' : 'create'
+        action: directArrival ? 'arrive' : 'create',
+        ...(inventoryResult ? {
+          inventoryId: inventoryResult.inventoryId,
+          stockBefore: inventoryResult.stockBefore,
+          stockAfter: inventoryResult.stockAfter,
+          inventoryChange: inventoryResult.inventoryChange,
+        } : {}),
       }]
     };
+    finalPurchaseRecord = purchaseRecord;
+
+    if (inventoryResult) {
+      const recheckInv = (() => {
+        const findInv = (list) => list.find(i => i.id === inventoryResult.inventoryId);
+        let target = findInv(inventory);
+        if (!target) {
+          const raw = localStorage.getItem(inventoryConfig.storage);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              target = findInv(parsed);
+            } catch {}
+          }
+        }
+        return target;
+      })();
+      if (recheckInv && recheckInv.movements) {
+        const newMovements = recheckInv.movements.map(m =>
+          m.id === inventoryResult.movementId ? { ...m, sourceId: purchaseId } : m
+        );
+        const updatedInv = { ...recheckInv, movements: newMovements };
+        const raw = localStorage.getItem(inventoryConfig.storage);
+        let currentInvList = [];
+        try {
+          currentInvList = raw ? JSON.parse(raw) : [];
+        } catch {}
+        const nextInvList = currentInvList.some(i => i.id === updatedInv.id)
+          ? currentInvList.map(i => i.id === updatedInv.id ? updatedInv : i)
+          : [updatedInv, ...currentInvList];
+        setInventory(nextInvList);
+        localStorage.setItem(inventoryConfig.storage, JSON.stringify(nextInvList));
+      }
+    }
+
     persistPurchases([purchaseRecord, ...purchases]);
     const appBefore = records.find((item) => item.id === purchaseForm.applicationId);
+    const timelineAdditions = [];
+    if (directArrival && inventoryResult) {
+      timelineAdditions.push({
+        status: '已入库',
+        at: today,
+        by: '系统',
+        comment: `采购入库完成，入库数量：${purchaseRecord.purchaseQty}，库存从 ${inventoryResult.stockBefore} 变更为 ${inventoryResult.stockAfter}`,
+        action: 'inventory-add',
+        inventoryChange: inventoryResult.inventoryChange,
+        stockBefore: inventoryResult.stockBefore,
+        stockAfter: inventoryResult.stockAfter,
+        inventoryId: inventoryResult.inventoryId,
+        purchaseId: purchaseId,
+      });
+      timelineAdditions.push({
+        status: '已到货',
+        at: today,
+        by: '系统',
+        comment: `采购已到货，数量：${purchaseRecord.purchaseQty}，${purchaseForm.purchaseNote || ''}`,
+        action: 'purchase-arrive'
+      });
+    }
+    timelineAdditions.push({
+      status: '采购中',
+      at: today,
+      by: '系统',
+      comment: `已创建采购任务，供应商：${purchaseForm.supplier}，采购数量：${purchaseRecord.purchaseQty}`,
+      action: 'purchase-create'
+    });
+
     const updatedRecords = records.map((item) => item.id === purchaseForm.applicationId ? {
       ...item,
       hasPurchase: true,
       purchaseStatus: purchaseRecord.status,
-      timeline: [...(item.timeline || []), {
-        status: '采购中',
-        at: today,
-        by: '系统',
-        comment: `已创建采购任务，供应商：${purchaseForm.supplier}，采购数量：${purchaseRecord.purchaseQty}`,
-        action: 'purchase-create'
-      }]
+      timeline: [...(item.timeline || []), ...timelineAdditions],
     } : item);
 
     logAuditEvent({
@@ -1542,38 +1710,175 @@ function App() {
         etaDate: purchaseForm.etaDate,
         ship: application.ship,
         partName: application.partName,
+        ...(inventoryResult ? {
+          inventoryId: inventoryResult.inventoryId,
+          stockBefore: inventoryResult.stockBefore,
+          stockAfter: inventoryResult.stockAfter,
+          inventoryChange: inventoryResult.inventoryChange,
+        } : {}),
       },
       operator: operatorName,
     });
+
+    if (directArrival && inventoryResult) {
+      const appAfter = updatedRecords.find((r) => r.id === purchaseForm.applicationId);
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.PURCHASE_ARRIVE,
+        targetType: 'record',
+        targetId: purchaseForm.applicationId,
+        beforeData: appBefore,
+        afterData: appAfter,
+        metadata: {
+          purchaseId: purchaseId,
+          purchaseQty: purchaseRecord.purchaseQty,
+          arrivalDate: purchaseForm.arrivalDate,
+          comment: purchaseForm.purchaseNote || '',
+          ship: application.ship,
+          partName: application.partName,
+          inventoryId: inventoryResult.inventoryId,
+          stockBefore: inventoryResult.stockBefore,
+          stockAfter: inventoryResult.stockAfter,
+          inventoryChange: inventoryResult.inventoryChange,
+        },
+        operator: operatorName,
+      });
+    }
 
     persist(updatedRecords);
     if (selected?.id === purchaseForm.applicationId) {
       setSelected(updatedRecords.find((item) => item.id === purchaseForm.applicationId));
     }
     setPurchaseForm({ ...purchaseConfig.defaultValues, applicationId: '' });
-    setSelectedPurchase(purchaseRecord);
+    setSelectedPurchase(finalPurchaseRecord);
     setShowCreatePurchaseFromApp(false);
   }
 
   function updatePurchaseStatus(id, status, extraData = {}) {
     const purchase = purchases.find((p) => p.id === id);
     if (!purchase) return;
+
+    const isArriving = status === '已到货';
+    const alreadyStocked = purchase.inventoryRecorded;
+
+    if (isArriving && alreadyStocked) {
+      alert('该采购已完成入库，不可重复入库。');
+      return;
+    }
+
     const timelineEntry = {
       status,
       at: today,
       by: '操作员',
       comment: extraData.comment || '',
-      action: status === '已到货' ? 'arrive' : 'update'
+      action: isArriving ? 'arrive' : 'update'
     };
+
+    let inventoryResult = null;
+    if (isArriving && !alreadyStocked) {
+      const purchaseQty = Number(purchase.purchaseQty) || 0;
+      const invMatch = inventory.find((inv) =>
+        inv.ship === purchase.ship &&
+        inv.partName === purchase.partName &&
+        inv.system === purchase.system &&
+        inv.location === purchase.location
+      );
+      const beforeStock = invMatch ? (Number(invMatch.currentStock) || 0) : 0;
+      const afterStock = beforeStock + purchaseQty;
+      const stockMovement = {
+        id: uid(),
+        type: 'purchase-in',
+        changeQty: purchaseQty,
+        stockBefore: beforeStock,
+        stockAfter: afterStock,
+        reason: '采购到货入库',
+        sourceType: 'purchase',
+        sourceId: purchase.id,
+        applicationId: purchase.applicationId || '',
+        supplier: purchase.supplier || '',
+        at: today,
+        by: operatorName,
+      };
+
+      let updatedInvItem;
+      let nextInventory;
+      if (invMatch) {
+        updatedInvItem = {
+          ...invMatch,
+          currentStock: String(afterStock),
+          lastCheckDate: today,
+          movements: [...(invMatch.movements || []), stockMovement],
+        };
+        nextInventory = inventory.map((inv) => inv.id === invMatch.id ? updatedInvItem : inv);
+      } else {
+        updatedInvItem = {
+          id: uid(),
+          ship: purchase.ship,
+          partName: purchase.partName,
+          system: purchase.system,
+          location: purchase.location,
+          currentStock: String(afterStock),
+          safetyStock: String(Math.ceil(purchaseQty * 0.5)),
+          lastCheckDate: today,
+          createdAt: new Date().toISOString(),
+          movements: [stockMovement],
+        };
+        nextInventory = [updatedInvItem, ...inventory];
+      }
+      persistInventory(nextInventory);
+      if (selectedInv?.id === updatedInvItem.id || (!invMatch && selectedInv === null)) {
+        setSelectedInv(updatedInvItem);
+      }
+
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.INVENTORY_ADD,
+        targetType: 'inventory',
+        targetId: updatedInvItem.id,
+        beforeData: invMatch || null,
+        afterData: updatedInvItem,
+        metadata: {
+          addQty: purchaseQty,
+          stockBefore: beforeStock,
+          stockAfter: afterStock,
+          reason: '采购到货入库',
+          purchaseId: purchase.id,
+          applicationId: purchase.applicationId,
+          supplier: purchase.supplier,
+          ship: purchase.ship,
+          partName: purchase.partName,
+          system: purchase.system,
+          location: purchase.location,
+        },
+        operator: operatorName,
+      });
+
+      inventoryResult = {
+        inventoryId: updatedInvItem.id,
+        stockBefore: beforeStock,
+        stockAfter: afterStock,
+        inventoryChange: `+${purchaseQty}`,
+        movementId: stockMovement.id,
+      };
+    }
+
     const updatedPurchase = {
       ...purchase,
       status,
-      arrivalDate: status === '已到货' ? (extraData.arrivalDate || today) : purchase.arrivalDate,
-      timeline: [...(purchase.timeline || []), timelineEntry]
+      arrivalDate: isArriving ? (extraData.arrivalDate || today) : purchase.arrivalDate,
+      inventoryRecorded: isArriving ? true : purchase.inventoryRecorded,
+      inventoryId: inventoryResult?.inventoryId || purchase.inventoryId,
+      timeline: [...(purchase.timeline || []), {
+        ...timelineEntry,
+        ...(inventoryResult ? {
+          inventoryId: inventoryResult.inventoryId,
+          stockBefore: inventoryResult.stockBefore,
+          stockAfter: inventoryResult.stockAfter,
+          inventoryChange: inventoryResult.inventoryChange,
+        } : {}),
+      }]
     };
     const nextPurchases = purchases.map((p) => p.id === id ? updatedPurchase : p);
 
-    const eventType = status === '已到货' ? AUDIT_EVENT_TYPES.PURCHASE_ARRIVE : AUDIT_EVENT_TYPES.PURCHASE_UPDATE;
+    const eventType = isArriving ? AUDIT_EVENT_TYPES.PURCHASE_ARRIVE : AUDIT_EVENT_TYPES.PURCHASE_UPDATE;
     logAuditEvent({
       eventType,
       targetType: 'purchase',
@@ -1583,11 +1888,17 @@ function App() {
       metadata: {
         fromStatus: purchase.status,
         toStatus: status,
-        arrivalDate: status === '已到货' ? (extraData.arrivalDate || today) : undefined,
+        arrivalDate: isArriving ? (extraData.arrivalDate || today) : undefined,
         comment: extraData.comment || '',
         applicationId: purchase.applicationId,
         ship: purchase.ship,
         partName: purchase.partName,
+        ...(inventoryResult ? {
+          inventoryId: inventoryResult.inventoryId,
+          stockBefore: inventoryResult.stockBefore,
+          stockAfter: inventoryResult.stockAfter,
+          inventoryChange: inventoryResult.inventoryChange,
+        } : {}),
       },
       operator: operatorName,
     });
@@ -1598,18 +1909,35 @@ function App() {
     }
     if (purchase.applicationId) {
       const appBefore = records.find((item) => item.id === purchase.applicationId);
+      const timelineAdditions = [];
+      if (isArriving && inventoryResult) {
+        timelineAdditions.push({
+          status: '已入库',
+          at: today,
+          by: '系统',
+          comment: `采购入库完成，入库数量：${purchase.purchaseQty}，库存从 ${inventoryResult.stockBefore} 变更为 ${inventoryResult.stockAfter}`,
+          action: 'inventory-add',
+          inventoryChange: inventoryResult.inventoryChange,
+          stockBefore: inventoryResult.stockBefore,
+          stockAfter: inventoryResult.stockAfter,
+          inventoryId: inventoryResult.inventoryId,
+          purchaseId: purchase.id,
+        });
+      }
+      timelineAdditions.push({
+        status: isArriving ? '已到货' : '采购中',
+        at: today,
+        by: '系统',
+        comment: isArriving
+          ? `采购已到货，数量：${purchase.purchaseQty}，${extraData.comment || ''}`
+          : `采购状态更新为：${status}`,
+        action: isArriving ? 'purchase-arrive' : 'purchase-update'
+      });
+
       const updatedRecords = records.map((item) => item.id === purchase.applicationId ? {
         ...item,
         purchaseStatus: status,
-        timeline: [...(item.timeline || []), {
-          status: status === '已到货' ? '已到货' : '采购中',
-          at: today,
-          by: '系统',
-          comment: status === '已到货'
-            ? `采购已到货，数量：${purchase.purchaseQty}，${extraData.comment || ''}`
-            : `采购状态更新为：${status}`,
-          action: status === '已到货' ? 'purchase-arrive' : 'purchase-update'
-        }]
+        timeline: [...(item.timeline || []), ...timelineAdditions],
       } : item);
 
       if (eventType === AUDIT_EVENT_TYPES.PURCHASE_ARRIVE) {
@@ -1623,10 +1951,16 @@ function App() {
           metadata: {
             purchaseId: id,
             purchaseQty: purchase.purchaseQty,
-            arrivalDate: status === '已到货' ? (extraData.arrivalDate || today) : undefined,
+            arrivalDate: isArriving ? (extraData.arrivalDate || today) : undefined,
             comment: extraData.comment || '',
             ship: purchase.ship,
             partName: purchase.partName,
+            ...(inventoryResult ? {
+              inventoryId: inventoryResult.inventoryId,
+              stockBefore: inventoryResult.stockBefore,
+              stockAfter: inventoryResult.stockAfter,
+              inventoryChange: inventoryResult.inventoryChange,
+            } : {}),
           },
           operator: operatorName,
         });
@@ -1984,10 +2318,27 @@ function App() {
         const distQty = Number(distRecord.distQty) || 0;
         const restoredStock = currentStock + distQty;
 
+        const stockMovement = {
+          id: uid(),
+          type: 'dispatch-restore',
+          changeQty: distQty,
+          stockBefore: currentStock,
+          stockAfter: restoredStock,
+          reason: '删除发放记录，恢复库存',
+          sourceType: 'distribution',
+          sourceId: distRecord.id,
+          applicationId: distRecord.applicationId,
+          receiver: distRecord.receiver || '',
+          distributor: distRecord.distributor || '',
+          at: today,
+          by: operatorName,
+        };
+
         const updatedInvItem = {
           ...invItem,
           currentStock: String(restoredStock),
           lastCheckDate: today,
+          movements: [...(invItem.movements || []), stockMovement],
         };
         updatedInventory = inventory.map((inv) => inv.id === invItem.id ? updatedInvItem : inv);
         persistInventory(updatedInventory);
@@ -2130,10 +2481,27 @@ function App() {
     };
     persistDist([distRecord, ...distRecords]);
 
+    const stockMovement = {
+      id: uid(),
+      type: 'dispatch-out',
+      changeQty: -distQty,
+      stockBefore: currentStock,
+      stockAfter: currentStock - distQty,
+      reason: '发放出库',
+      sourceType: 'distribution',
+      sourceId: distRecord.id,
+      applicationId: application.id,
+      receiver: distForm.receiver || '',
+      distributor: distForm.distributor || '操作员',
+      at: today,
+      by: distForm.distributor || operatorName,
+    };
+
     const updatedInvItem = {
       ...invItem,
       currentStock: String(currentStock - distQty),
       lastCheckDate: today,
+      movements: [...(invItem.movements || []), stockMovement],
     };
     const updatedInventory = inventory.map((inv) => inv.id === invItem.id ? updatedInvItem : inv);
     persistInventory(updatedInventory);
@@ -2937,6 +3305,7 @@ function App() {
                         step.status === '已发放' ? 'dispatch' :
                         step.status === '采购中' ? 'purchase-create' :
                         step.status === '已到货' ? 'purchase-arrive' :
+                        step.status === '已入库' ? 'inventory-add' :
                         step.status === '待审批' ? 'create' : 'update'
                       ),
                       operator: step.by || '系统',
@@ -2945,6 +3314,9 @@ function App() {
                       approvedQty: step.approvedQty,
                       distQty: step.distQty,
                       receiver: step.receiver,
+                      inventoryChange: step.inventoryChange,
+                      stockBefore: step.stockBefore,
+                      stockAfter: step.stockAfter,
                     }));
                     const allEvents = [
                       ...timelineEvents,
@@ -2974,6 +3346,11 @@ function App() {
                         case 'purchase-create': return <ShoppingCart size={14} />;
                         case 'purchase-update': return <RefreshCw size={14} />;
                         case 'purchase-arrive': return <Package size={14} />;
+                        case 'inventory-add': return <PackagePlus size={14} />;
+                        case 'inventory_deduct':
+                        case 'inventory-deduct': return <MinusCircle size={14} />;
+                        case 'inventory_restore':
+                        case 'inventory-restore': return <RotateCcw size={14} />;
                         case 'migration': return <Database size={14} />;
                         default: return <Activity size={14} />;
                       }
@@ -2990,6 +3367,11 @@ function App() {
                         case 'purchase-create':
                         case 'purchase-update':
                         case 'purchase-arrive': return 'audit-ev-purchase';
+                        case 'inventory-add':
+                        case 'inventory_deduct':
+                        case 'inventory-deduct':
+                        case 'inventory_restore':
+                        case 'inventory-restore': return 'audit-ev-purchase';
                         case 'migration': return 'audit-ev-migration';
                         default: return '';
                       }
@@ -3615,7 +3997,15 @@ function App() {
                     </div>
                     <div className="approval-timeline">
                       {(selectedApproval.timeline || []).map((step, index) => (
-                        <div key={index} className={'approval-timeline-item ' + (step.action === 'approve' ? 'timeline-approved' : step.action === 'reject' ? 'timeline-rejected' : step.action === 'dispatch' ? 'timeline-dispatched' : '')}>
+                        <div key={index} className={'approval-timeline-item ' + (
+                          step.action === 'approve' ? 'timeline-approved' :
+                          step.action === 'reject' ? 'timeline-rejected' :
+                          step.action === 'dispatch' ? 'timeline-dispatched' :
+                          step.action === 'inventory-add' ? 'timeline-approved' :
+                          step.action === 'inventory-restore' ? 'timeline-approved' :
+                          step.action === 'purchase-arrive' ? 'timeline-approved' :
+                          ''
+                        )}>
                           <div className="timeline-dot" />
                           <div className="timeline-content">
                             <div className="timeline-header">
@@ -3811,6 +4201,59 @@ function App() {
                       <ShoppingCart size={16} />
                       从此低库存生成申请
                     </button>
+                  )}
+                  {(selectedInv.movements && selectedInv.movements.length > 0) && (
+                    <div className="approval-timeline-section" style={{ marginTop: '20px' }}>
+                      <div className="approval-form-divider">
+                        <Clock size={14} />
+                        <span>库存变动记录</span>
+                      </div>
+                      <div className="approval-timeline">
+                        {selectedInv.movements.slice().reverse().map((mv, index) => {
+                          const relatedPurchase = mv.sourceType === 'purchase' && mv.sourceId
+                            ? purchases.find(p => p.id === mv.sourceId)
+                            : null;
+                          const relatedApp = mv.applicationId
+                            ? records.find(r => r.id === mv.applicationId)
+                            : null;
+                          return (
+                            <div key={mv.id || index} className={'approval-timeline-item ' + (mv.type === 'purchase-in' ? 'timeline-approved' : mv.type === 'dispatch-out' ? 'timeline-dispatched' : '')}>
+                              <div className="timeline-dot" />
+                              <div className="timeline-content">
+                                <div className="timeline-header">
+                                  <strong>
+                                    {mv.type === 'purchase-in' ? '采购入库' :
+                                     mv.type === 'dispatch-out' ? '发放出库' :
+                                     mv.reason || '库存变动'}
+                                  </strong>
+                                  <span className="timeline-meta">{mv.at} · {mv.by}</span>
+                                </div>
+                                <p className="timeline-detail">
+                                  库存变更: {mv.changeQty >= 0 ? `+${mv.changeQty}` : mv.changeQty}
+                                  （{mv.stockBefore} → {mv.stockAfter}）
+                                </p>
+                                {mv.supplier && (
+                                  <p className="timeline-detail">供应商: {mv.supplier}</p>
+                                )}
+                                {relatedPurchase && (
+                                  <p className="timeline-detail">
+                                    来源采购: {relatedPurchase.partName}（采购数量: {relatedPurchase.purchaseQty}）
+                                  </p>
+                                )}
+                                {relatedApp && (
+                                  <p className="timeline-detail">
+                                    关联申请: {relatedApp.partName}（{relatedApp.ship}）
+                                  </p>
+                                )}
+                                {mv.reason && mv.type !== 'purchase-in' && mv.type !== 'dispatch-out' && (
+                                  <p className="timeline-detail">备注: {mv.reason}</p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   )}
                 </div>
               ) : (
@@ -4474,6 +4917,60 @@ function App() {
                       <span className="dist-field-label">采购状态</span>
                       <span className={'status purchase-status ' + purchaseStatusClass(selectedPurchase.status)}>{selectedPurchase.status}</span>
                     </div>
+                    {selectedPurchase.inventoryRecorded && selectedPurchase.inventoryId && (() => {
+                      const invItem = inventory.find(i => i.id === selectedPurchase.inventoryId);
+                      return (
+                        <>
+                          <div className="purchase-detail-item">
+                            <PackagePlus size={15} />
+                            <span className="dist-field-label">入库状态</span>
+                            <span className="status" style={{ background: '#dcfce7', color: '#166534' }}>已入库</span>
+                          </div>
+                          {invItem && (
+                            <div className="purchase-related-section">
+                              <div className="dist-section-title">
+                                <CheckCircle2 size={15} />
+                                <strong>关联库存</strong>
+                              </div>
+                              <div className="purchase-related-info">
+                                <p><strong>{invItem.partName}</strong> · {invItem.ship}</p>
+                                <p>{`${invItem.system} · ${invItem.location} | 当前库存：${invItem.currentStock}`}</p>
+                                {selectedPurchase.timeline && (() => {
+                                  const lastArrive = selectedPurchase.timeline.filter(t => t.action === 'arrive').pop();
+                                  if (lastArrive && lastArrive.inventoryChange) {
+                                    return (
+                                      <p>
+                                        本次入库：<strong style={{ color: '#166534' }}>{lastArrive.inventoryChange}</strong>
+                                        （{lastArrive.stockBefore} → {lastArrive.stockAfter}）
+                                      </p>
+                                    );
+                                  }
+                                  return null;
+                                })()}
+                                <button
+                                  className="primary"
+                                  type="button"
+                                  style={{ marginTop: '8px' }}
+                                  onClick={() => {
+                                    setSelectedInv(invItem);
+                                    setActiveTab('inventory');
+                                  }}
+                                >
+                                  <ArrowRight size={14} />查看库存详情
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                    {selectedPurchase.status === '已到货' && !selectedPurchase.inventoryRecorded && (
+                      <div className="purchase-detail-item">
+                        <AlertTriangle size={15} />
+                        <span className="dist-field-label">入库状态</span>
+                        <span className="status" style={{ background: '#fef3c7', color: '#92400e' }}>待补录</span>
+                      </div>
+                    )}
                     {selectedPurchase.purchaseNote && (
                       <div className="purchase-detail-item">
                         <FileText size={15} />
@@ -4533,6 +5030,11 @@ function App() {
                               <strong>{step.status}</strong>
                               <span className="timeline-meta">{step.at} · {step.by}</span>
                             </div>
+                            {step.inventoryChange && (
+                              <p className="timeline-detail">
+                                库存变更: {step.inventoryChange}（{step.stockBefore} → {step.stockAfter}）
+                              </p>
+                            )}
                             {step.comment && (
                               <p className="timeline-detail">{step.comment}</p>
                             )}
