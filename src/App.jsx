@@ -1350,6 +1350,27 @@ function App() {
     setSelectedInv(nextItem);
   }
 
+  function createRequestFromLowStock(invItem) {
+    const current = Number(invItem.currentStock) || 0;
+    const safety = Number(invItem.safetyStock) || 0;
+    const suggestedQty = Math.max(safety - current, 1);
+    const reason = `库存预警：当前库存${current}，低于安全库存${safety}，建议申请补货${suggestedQty}件`;
+    setForm({
+      ...appConfig.defaultValues,
+      ship: appConfig.ships[0],
+      partName: invItem.partName,
+      system: invItem.system,
+      location: invItem.location,
+      qty: String(suggestedQty),
+      urgency: '高',
+      reason: reason,
+      status: appConfig.primaryStatus
+    });
+    setSelectedApplyTemplate('');
+    setActiveTab('application');
+    setSelected(null);
+  }
+
   function updateStatus(id, status) {
     const item = records.find((r) => r.id === id);
     if (!item) return;
@@ -3231,6 +3252,17 @@ function App() {
                       </p>
                       {low && <div className="warning"><AlertTriangle size={15} />库存低于安全库存，请及时补货</div>}
                       <div className="actions" onClick={(event) => event.stopPropagation()}>
+                        {low && (
+                          <button
+                            className="primary"
+                            type="button"
+                            style={{ background: '#ea580c', padding: '6px 12px', fontSize: '13px' }}
+                            onClick={() => createRequestFromLowStock(item)}
+                          >
+                            <ShoppingCart size={14} />
+                            生成申请
+                          </button>
+                        )}
                         <button className="ghost-danger" type="button" onClick={() => removeInventory(item.id)}><Trash2 size={14} />删除</button>
                       </div>
                     </article>
@@ -3286,6 +3318,17 @@ function App() {
                     </div>
                   )}
                   <p>{`最后盘点日期: ${selectedInv.lastCheckDate || '未记录'}`}</p>
+                  {isLowStock(selectedInv) && (
+                    <button
+                      className="primary"
+                      type="button"
+                      style={{ background: '#ea580c', marginTop: '16px', width: '100%' }}
+                      onClick={() => createRequestFromLowStock(selectedInv)}
+                    >
+                      <ShoppingCart size={16} />
+                      从此低库存生成申请
+                    </button>
+                  )}
                 </div>
               ) : (
                 <p className="empty">点击任意库存记录查看详情。</p>
