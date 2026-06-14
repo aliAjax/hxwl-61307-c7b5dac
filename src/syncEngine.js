@@ -3,9 +3,34 @@ const SYNC_CONFLICTS_STORAGE = 'hxwl-61307-sync-conflicts';
 const SYNC_BASELINE_STORAGE = 'hxwl-61307-sync-baseline';
 const SYNC_META_STORAGE = 'hxwl-61307-sync-meta';
 
+export const OBJECT_TYPES = {
+  APPLICATION: 'application',
+  INVENTORY: 'inventory',
+  PURCHASE: 'purchase',
+  TEMPLATE: 'template',
+  DISTRIBUTION: 'distribution',
+};
+
+export const OBJECT_TYPE_LABELS = {
+  [OBJECT_TYPES.APPLICATION]: '备件申请',
+  [OBJECT_TYPES.INVENTORY]: '库存',
+  [OBJECT_TYPES.PURCHASE]: '采购',
+  [OBJECT_TYPES.TEMPLATE]: '模板',
+  [OBJECT_TYPES.DISTRIBUTION]: '发放记录',
+};
+
+export const SYNC_DEPENDENCY_ORDER = {
+  [OBJECT_TYPES.TEMPLATE]: 1,
+  [OBJECT_TYPES.INVENTORY]: 2,
+  [OBJECT_TYPES.APPLICATION]: 3,
+  [OBJECT_TYPES.PURCHASE]: 4,
+  [OBJECT_TYPES.DISTRIBUTION]: 5,
+};
+
 export const OP_TYPES = {
   CREATE: 'create',
   UPDATE_STATUS: 'update_status',
+  UPDATE: 'update',
   DELETE: 'delete',
   APPROVE: 'approve',
   REJECT: 'reject',
@@ -90,11 +115,30 @@ export function enqueueOperation(operation) {
     synced: false,
     syncAttempts: 0,
     error: null,
+    objectType: operation.objectType || OBJECT_TYPES.APPLICATION,
     ...operation,
   };
   queue.push(op);
   saveSyncQueue(queue);
   return op;
+}
+
+export function sortOperationsByDependency(operations) {
+  return [...operations].sort((a, b) => {
+    const orderA = SYNC_DEPENDENCY_ORDER[a.objectType] || 99;
+    const orderB = SYNC_DEPENDENCY_ORDER[b.objectType] || 99;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.timestamp - b.timestamp;
+  });
+}
+
+export function getPendingOperationsByType() {
+  const pending = getPendingOperations();
+  const grouped = {};
+  Object.values(OBJECT_TYPES).forEach((t) => {
+    grouped[t] = pending.filter((op) => op.objectType === t);
+  });
+  return grouped;
 }
 
 export function removeFromQueue(opId) {

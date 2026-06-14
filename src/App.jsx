@@ -5,6 +5,9 @@ import {
   OP_TYPES,
   CONFLICT_TYPES,
   RESOLUTION_STRATEGIES,
+  OBJECT_TYPES,
+  OBJECT_TYPE_LABELS,
+  SYNC_DEPENDENCY_ORDER,
   loadSyncQueue,
   saveSyncQueue,
   loadConflicts,
@@ -16,7 +19,9 @@ import {
   enqueueOperation,
   removeFromQueue,
   getPendingOperations,
+  getPendingOperationsByType,
   getCompletedOperations,
+  sortOperationsByDependency,
   takeBaseline,
   detectConflicts,
   autoResolveConflict,
@@ -698,7 +703,53 @@ function App() {
 
   function describeOperation(op) {
     const t = op.type;
+    const objType = op.objectType || OBJECT_TYPES.APPLICATION;
     const payload = op.payload || {};
+    const objLabel = OBJECT_TYPE_LABELS[objType] || objType;
+    if (objType === OBJECT_TYPES.INVENTORY) {
+      switch (t) {
+        case OP_TYPES.CREATE:
+          return `新增库存「${payload.partName || payload.record?.partName || '未知备件'}」`;
+        case OP_TYPES.UPDATE:
+          return `更新库存「${payload.partName || '未知'}」`;
+        case OP_TYPES.DELETE:
+          return `删除库存记录`;
+        default:
+          return `[库存] ${t}`;
+      }
+    }
+    if (objType === OBJECT_TYPES.PURCHASE) {
+      switch (t) {
+        case OP_TYPES.CREATE:
+          return `创建采购「${payload.partName || '未知备件'}」`;
+        case OP_TYPES.UPDATE_STATUS:
+          return `更新采购状态「${payload.fromStatus || '-'} → ${payload.toStatus}」`;
+        case OP_TYPES.DELETE:
+          return `删除采购记录`;
+        default:
+          return `[采购] ${t}`;
+      }
+    }
+    if (objType === OBJECT_TYPES.TEMPLATE) {
+      switch (t) {
+        case OP_TYPES.CREATE:
+          return `创建模板「${payload.templateName || payload.record?.templateName || '未知模板'}」`;
+        case OP_TYPES.DELETE:
+          return `删除模板「${payload.templateName || '未知模板'}」`;
+        default:
+          return `[模板] ${t}`;
+      }
+    }
+    if (objType === OBJECT_TYPES.DISTRIBUTION) {
+      switch (t) {
+        case OP_TYPES.CREATE:
+          return `登记发放「${payload.partName || '未知备件'}（${payload.distQty || 0}件）」`;
+        case OP_TYPES.DELETE:
+          return `删除发放记录`;
+        default:
+          return `[发放] ${t}`;
+      }
+    }
     switch (t) {
       case OP_TYPES.CREATE:
         return `创建申请「${payload.partName || payload.record?.partName || '未知'}」`;
@@ -713,7 +764,7 @@ function App() {
       case OP_TYPES.DISPATCH:
         return `发放出库`;
       default:
-        return t;
+        return `[${objLabel}] ${t}`;
     }
   }
 
@@ -732,10 +783,25 @@ function App() {
 
     try {
       const pendingOps = getPendingOperations();
+      const sortedOps = sortOperationsByDependency(pendingOps);
       const currentBaseline = loadBaseline();
       const currentRecords = records;
 
-      addLog('info', `待同步操作：${pendingOps.length}条`);
+      const opsByType = {};
+      sortedOps.forEach((op) => {
+        const t = op.objectType || OBJECT_TYPES.APPLICATION;
+        if (!opsByType[t]) opsByType[t] = [];
+        opsByType[t].push(op);
+      });
+
+      const typeSummary = Object.entries(opsByType)
+        .map(([t, list]) => `${OBJECT_TYPE_LABELS[t] || t}${list.length}条`)
+        .join('、');
+
+      addLog('info', `待同步操作：${pendingOps.length}条（${typeSummary || '无'}）`);
+      if (typeSummary) {
+        addLog('info', `同步顺序：模板 → 库存 → 备件申请 → 采购 → 发放记录`);
+      }
       setSyncProgress({ current: 0, total: pendingOps.length + 3, message: '生成服务端快照（模拟）...' });
       await simulateServerLatency();
 
@@ -743,8 +809,11 @@ function App() {
       addLog('info', `服务端快照生成完成（${remoteSnapshot.length}条记录）`);
       setSyncProgress({ current: 1, total: pendingOps.length + 3, message: '检测数据冲突...' });
 
-      const detectedConflicts = detectConflicts(pendingOps, currentBaseline, remoteSnapshot);
-      addLog('warn', `检测到${detectedConflicts.length}个冲突，正在处理...`);
+      const appOps = sortedOps.filter((op) => !op.objectType || op.objectType === OBJECT_TYPES.APPLICATION);
+      const detectedConflicts = detectConflicts(appOps, currentBaseline, remoteSnapshot);
+      if (detectedConflicts.length > 0) {
+        addLog('warn', `检测到${detectedConflicts.length}个冲突（备件申请），正在处理...`);
+      }
 
       const existingConflicts = loadConflicts();
       const existingConflictKeys = new Set(
@@ -793,21 +862,33 @@ function App() {
       saveConflicts(allConflicts);
       setConflicts(allConflicts);
 
-      setSyncProgress({ current: 3, total: pendingOps.length + 3, message: '同步无冲突操作...' });
+      setSyncProgress({ current: 3, total: pendingOps.length + 3, message: '同步无冲突操作（按业务依赖顺序）...' });
       let syncedCount = 0;
+      const syncedByType = {};
       const queue = loadSyncQueue();
       const updatedQueue = queue.map((op) => {
         if (op.synced) return op;
         if (opsToRemoveIds.has(op.id)) {
           syncedCount += 1;
+          const t = op.objectType || OBJECT_TYPES.APPLICATION;
+          syncedByType[t] = (syncedByType[t] || 0) + 1;
           return { ...op, synced: true, syncAttempts: op.syncAttempts + 1, error: null, syncedAt: Date.now(), removedByConflict: true };
         }
         if (conflictOpsIds.has(op.id)) return op;
         syncedCount += 1;
+        const t = op.objectType || OBJECT_TYPES.APPLICATION;
+        syncedByType[t] = (syncedByType[t] || 0) + 1;
         return { ...op, synced: true, syncAttempts: op.syncAttempts + 1, error: null, syncedAt: Date.now() };
       });
       saveSyncQueue(updatedQueue);
       setSyncQueue(updatedQueue);
+
+      if (syncedCount > 0) {
+        const syncedSummary = Object.entries(syncedByType)
+          .map(([t, n]) => `${OBJECT_TYPE_LABELS[t] || t}${n}条`)
+          .join('、');
+        addLog('info', `同步操作完成：${syncedSummary}`);
+      }
 
       await simulateServerLatency();
 
@@ -826,9 +907,12 @@ function App() {
         syncCount: loadSyncMeta().syncCount + 1,
       });
 
+      const finalSummary = Object.entries(syncedByType).length > 0
+        ? Object.entries(syncedByType).map(([t, n]) => `${OBJECT_TYPE_LABELS[t] || t}${n}条`).join('、')
+        : '0条';
       addLog(
         unresolvedConfs.length === 0 ? 'success' : 'warn',
-        `同步完成：成功${syncedCount}条，剩余${unresolvedConfs.length}个冲突需手动处理`
+        `同步完成：成功${syncedCount}条（${finalSummary}），剩余${unresolvedConfs.length}个冲突需手动处理`
       );
 
       if (unresolvedConfs.length > 0) {
@@ -1374,6 +1458,18 @@ function App() {
       ...invForm,
       createdAt: new Date().toISOString()
     };
+    enqueueAndRefresh({
+      type: OP_TYPES.CREATE,
+      objectType: OBJECT_TYPES.INVENTORY,
+      targetId: nextItem.id,
+      payload: {
+        record: nextItem,
+        partName: nextItem.partName,
+        ship: nextItem.ship,
+        system: nextItem.system,
+        location: nextItem.location,
+      },
+    });
     persistInventory([nextItem, ...inventory]);
     setInvForm(inventoryConfig.defaultValues);
     setSelectedInv(nextItem);
@@ -1670,6 +1766,18 @@ function App() {
       }
     }
 
+    enqueueAndRefresh({
+      type: OP_TYPES.CREATE,
+      objectType: OBJECT_TYPES.PURCHASE,
+      targetId: purchaseId,
+      payload: {
+        record: purchaseRecord,
+        partName: application.partName,
+        ship: application.ship,
+        supplier: submittedPurchaseForm.supplier,
+        purchaseQty: purchaseRecord.purchaseQty,
+      },
+    });
     persistPurchases([purchaseRecord, ...purchases]);
     const appBefore = records.find((item) => item.id === submittedPurchaseForm.applicationId);
     const timelineAdditions = [];
@@ -1914,6 +2022,24 @@ function App() {
       operator: operatorName,
     });
 
+    enqueueAndRefresh({
+      type: OP_TYPES.UPDATE_STATUS,
+      objectType: OBJECT_TYPES.PURCHASE,
+      targetId: id,
+      payload: {
+        fromStatus: purchase.status,
+        toStatus: status,
+        partName: purchase.partName,
+        ship: purchase.ship,
+        comment: extraData.comment || '',
+        ...(inventoryResult ? {
+          inventoryId: inventoryResult.inventoryId,
+          stockBefore: inventoryResult.stockBefore,
+          stockAfter: inventoryResult.stockAfter,
+          inventoryChange: inventoryResult.inventoryChange,
+        } : {}),
+      },
+    });
     persistPurchases(nextPurchases);
     if (selectedPurchase?.id === id) {
       setSelectedPurchase(nextPurchases.find((p) => p.id === id));
@@ -2039,6 +2165,19 @@ function App() {
   }
 
   function removeTemplate(id) {
+    const template = templates.find((t) => t.id === id);
+    if (template) {
+      enqueueAndRefresh({
+        type: OP_TYPES.DELETE,
+        objectType: OBJECT_TYPES.TEMPLATE,
+        targetId: id,
+        payload: {
+          templateName: template.templateName,
+          partName: template.partName,
+          originalRecord: template,
+        },
+      });
+    }
     const next = templates.filter((item) => item.id !== id);
     persistTemplates(next);
     if (selectedTemplate?.id === id) setSelectedTemplate(null);
@@ -2490,6 +2629,23 @@ function App() {
       stockBeforeDeduct: currentStock,
       stockAfterDeduct: currentStock - distQty,
     };
+    enqueueAndRefresh({
+      type: OP_TYPES.CREATE,
+      objectType: OBJECT_TYPES.DISTRIBUTION,
+      targetId: distRecord.id,
+      payload: {
+        record: distRecord,
+        partName: application.partName,
+        ship: application.ship,
+        distQty: distForm.distQty,
+        receiver: distForm.receiver,
+        distributor: distForm.distributor,
+        applicationId: distForm.applicationId,
+        inventoryId: invItem.id,
+        stockBefore: currentStock,
+        stockAfter: currentStock - distQty,
+      },
+    });
     persistDist([distRecord, ...distRecords]);
 
     const stockMovement = {
@@ -5301,6 +5457,35 @@ function App() {
             </article>
           </section>
 
+          {pendingCount > 0 && (
+            <section className="panel sync-type-summary-panel">
+              <div className="panel-title">
+                <Layers size={16} />
+                <h2>待同步操作按类型分类</h2>
+              </div>
+              <div className="sync-type-summary">
+                {Object.entries(getPendingOperationsByType()).map(([type, list]) => (
+                  <div
+                    key={type}
+                    className={'sync-type-summary-item ' + (list.length > 0 ? 'has-items' : '')}
+                  >
+                    <div className="sync-type-summary-icon">
+                      {type === OBJECT_TYPES.TEMPLATE && <Bookmark size={14} />}
+                      {type === OBJECT_TYPES.INVENTORY && <Package size={14} />}
+                      {type === OBJECT_TYPES.APPLICATION && <ClipboardList size={14} />}
+                      {type === OBJECT_TYPES.PURCHASE && <ShoppingCart size={14} />}
+                      {type === OBJECT_TYPES.DISTRIBUTION && <Truck size={14} />}
+                    </div>
+                    <div className="sync-type-summary-info">
+                      <span className="sync-type-summary-label">{OBJECT_TYPE_LABELS[type] || type}</span>
+                      <span className="sync-type-summary-count">{list.length}条</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {isSyncing && (
             <section className="panel sync-progress-panel">
               <div className="sync-progress-bar-wrapper">
@@ -5364,37 +5549,59 @@ function App() {
                 <div className="panel-title">
                   <Clock size={18} />
                   <h2>待同步操作 ({pendingCount})</h2>
+                  <span className="panel-subtitle" style={{ marginLeft: 'auto', fontSize: '12px', color: '#888' }}>
+                    同步顺序：模板 → 库存 → 申请 → 采购 → 发放
+                  </span>
                 </div>
                 <div className="sync-queue-list">
                   {syncQueue.filter(op => !op.synced).length === 0 ? (
                     <p className="empty">暂无待同步操作。在离线状态下进行的操作会显示在这里。</p>
                   ) : (
-                    syncQueue
-                      .filter(op => !op.synced)
-                      .sort((a, b) => b.timestamp - a.timestamp)
-                      .map((op) => (
-                        <div key={op.id} className="sync-queue-item">
-                          <div className="sync-queue-icon">
-                            {op.type === OP_TYPES.CREATE && <Plus size={16} />}
-                            {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={16} />}
-                            {op.type === OP_TYPES.APPROVE && <CheckCircle size={16} />}
-                            {op.type === OP_TYPES.REJECT && <XCircle size={16} />}
-                            {op.type === OP_TYPES.DELETE && <Trash2 size={16} />}
-                            {op.type === OP_TYPES.DISPATCH && <Truck size={16} />}
-                          </div>
-                          <div className="sync-queue-info">
-                            <div className="sync-queue-title">
-                              <span className="sync-op-type">{describeOperation(op)}</span>
-                              <span className={'sync-op-status status-pending'}>待同步</span>
+                    sortOperationsByDependency(syncQueue.filter(op => !op.synced))
+                      .map((op) => {
+                        const objType = op.objectType || OBJECT_TYPES.APPLICATION;
+                        return (
+                          <div key={op.id} className="sync-queue-item">
+                            <div className={'sync-queue-icon sync-queue-icon-' + objType}>
+                              {objType === OBJECT_TYPES.TEMPLATE && <Bookmark size={16} />}
+                              {objType === OBJECT_TYPES.INVENTORY && <Package size={16} />}
+                              {objType === OBJECT_TYPES.APPLICATION && (
+                                <>
+                                  {op.type === OP_TYPES.CREATE && <Plus size={16} />}
+                                  {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={16} />}
+                                  {op.type === OP_TYPES.APPROVE && <CheckCircle size={16} />}
+                                  {op.type === OP_TYPES.REJECT && <XCircle size={16} />}
+                                  {op.type === OP_TYPES.DELETE && <Trash2 size={16} />}
+                                  {op.type === OP_TYPES.DISPATCH && <Truck size={16} />}
+                                </>
+                              )}
+                              {objType === OBJECT_TYPES.PURCHASE && (
+                                <>
+                                  {op.type === OP_TYPES.CREATE && <ShoppingCart size={16} />}
+                                  {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={16} />}
+                                  {op.type === OP_TYPES.DELETE && <Trash2 size={16} />}
+                                </>
+                              )}
+                              {objType === OBJECT_TYPES.DISTRIBUTION && <Truck size={16} />}
                             </div>
-                            <p className="sync-queue-meta">
-                              {op.payload?.partName || op.payload?.record?.partName || '未知备件'}
-                              <span className="sync-meta-divider">·</span>
-                              {new Date(op.timestamp).toLocaleString('zh-CN')}
-                            </p>
+                            <div className="sync-queue-info">
+                              <div className="sync-queue-title">
+                                <span className="sync-op-type">{describeOperation(op)}</span>
+                                <span className={'sync-object-type-tag sync-object-tag-' + objType}>
+                                  {OBJECT_TYPE_LABELS[objType] || objType}
+                                </span>
+                                <span className={'sync-op-status status-pending'}>待同步</span>
+                              </div>
+                              <p className="sync-queue-meta">
+                                {op.payload?.partName || op.payload?.templateName || op.payload?.record?.partName || op.payload?.record?.templateName || '—'}
+                                {op.payload?.ship && <><span className="sync-meta-divider">·</span>{op.payload.ship}</>}
+                                <span className="sync-meta-divider">·</span>
+                                {new Date(op.timestamp).toLocaleString('zh-CN')}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                   )}
                 </div>
               </section>
@@ -5412,29 +5619,50 @@ function App() {
                       .filter(op => op.synced && !op.removedByConflict)
                       .sort((a, b) => (b.syncedAt || 0) - (a.syncedAt || 0))
                       .slice(0, 20)
-                      .map((op) => (
-                        <div key={op.id} className="sync-queue-item synced">
-                          <div className="sync-queue-icon synced-icon">
-                            {op.type === OP_TYPES.CREATE && <Plus size={16} />}
-                            {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={16} />}
-                            {op.type === OP_TYPES.APPROVE && <CheckCircle size={16} />}
-                            {op.type === OP_TYPES.REJECT && <XCircle size={16} />}
-                            {op.type === OP_TYPES.DELETE && <Trash2 size={16} />}
-                            {op.type === OP_TYPES.DISPATCH && <Truck size={16} />}
-                          </div>
-                          <div className="sync-queue-info">
-                            <div className="sync-queue-title">
-                              <span className="sync-op-type">{describeOperation(op)}</span>
-                              <span className={'sync-op-status status-synced'}>已同步</span>
+                      .map((op) => {
+                        const objType = op.objectType || OBJECT_TYPES.APPLICATION;
+                        return (
+                          <div key={op.id} className="sync-queue-item synced">
+                            <div className={'sync-queue-icon synced-icon sync-queue-icon-' + objType}>
+                              {objType === OBJECT_TYPES.TEMPLATE && <Bookmark size={16} />}
+                              {objType === OBJECT_TYPES.INVENTORY && <Package size={16} />}
+                              {objType === OBJECT_TYPES.APPLICATION && (
+                                <>
+                                  {op.type === OP_TYPES.CREATE && <Plus size={16} />}
+                                  {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={16} />}
+                                  {op.type === OP_TYPES.APPROVE && <CheckCircle size={16} />}
+                                  {op.type === OP_TYPES.REJECT && <XCircle size={16} />}
+                                  {op.type === OP_TYPES.DELETE && <Trash2 size={16} />}
+                                  {op.type === OP_TYPES.DISPATCH && <Truck size={16} />}
+                                </>
+                              )}
+                              {objType === OBJECT_TYPES.PURCHASE && (
+                                <>
+                                  {op.type === OP_TYPES.CREATE && <ShoppingCart size={16} />}
+                                  {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={16} />}
+                                  {op.type === OP_TYPES.DELETE && <Trash2 size={16} />}
+                                </>
+                              )}
+                              {objType === OBJECT_TYPES.DISTRIBUTION && <Truck size={16} />}
                             </div>
-                            <p className="sync-queue-meta">
-                              {op.payload?.partName || op.payload?.record?.partName || '未知备件'}
-                              <span className="sync-meta-divider">·</span>
-                              {op.syncedAt ? new Date(op.syncedAt).toLocaleString('zh-CN') : '-'}
-                            </p>
+                            <div className="sync-queue-info">
+                              <div className="sync-queue-title">
+                                <span className="sync-op-type">{describeOperation(op)}</span>
+                                <span className={'sync-object-type-tag sync-object-tag-' + objType}>
+                                  {OBJECT_TYPE_LABELS[objType] || objType}
+                                </span>
+                                <span className={'sync-op-status status-synced'}>已同步</span>
+                              </div>
+                              <p className="sync-queue-meta">
+                                {op.payload?.partName || op.payload?.templateName || op.payload?.record?.partName || op.payload?.record?.templateName || '—'}
+                                {op.payload?.ship && <><span className="sync-meta-divider">·</span>{op.payload.ship}</>}
+                                <span className="sync-meta-divider">·</span>
+                                {op.syncedAt ? new Date(op.syncedAt).toLocaleString('zh-CN') : '-'}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                   )}
                 </div>
               </section>
