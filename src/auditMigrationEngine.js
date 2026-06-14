@@ -20,6 +20,8 @@ export const AUDIT_EVENT_TYPES = {
   PURCHASE_DELETE: 'purchase_delete',
   MIGRATION: 'migration',
   UPDATE_STATUS: 'update_status',
+  INVENTORY_DEDUCT: 'inventory_deduct',
+  INVENTORY_RESTORE: 'inventory_restore',
 };
 
 export const AUDIT_EVENT_LABELS = {
@@ -35,6 +37,8 @@ export const AUDIT_EVENT_LABELS = {
   purchase_delete: '删除采购任务',
   migration: '数据迁移',
   update_status: '状态变更',
+  inventory_deduct: '库存扣减',
+  inventory_restore: '库存恢复',
 };
 
 export const STORAGE_KEYS = {
@@ -556,6 +560,10 @@ export function exportAuditLogToCSV(filterOptions = {}) {
         if (data.urgency) parts.push(`紧急:${data.urgency}`);
         if (data.supplier) parts.push(`供应商:${data.supplier}`);
         if (data.purchaseQty) parts.push(`采购数:${data.purchaseQty}`);
+        if (data.currentStock !== undefined) parts.push(`当前库存:${data.currentStock}`);
+        if (data.safetyStock !== undefined) parts.push(`安全库存:${data.safetyStock}`);
+        if (data.system) parts.push(`系统:${data.system}`);
+        if (data.location) parts.push(`位置:${data.location}`);
         if (parts.length === 0) {
           const keys = Object.keys(data).slice(0, 3);
           keys.forEach((k) => parts.push(`${k}:${String(data[k]).slice(0, 20)}`));

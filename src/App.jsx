@@ -1957,6 +1957,132 @@ function App() {
     localStorage.setItem(distConfig.storage, JSON.stringify(next));
   }
 
+  function removeDistribution(distId) {
+    const distRecord = distRecords.find((d) => d.id === distId);
+    if (!distRecord) return;
+
+    const restoreStock = confirm(
+      `确认删除发放记录（${distRecord.partName}，发放${distRecord.distQty}件）？\n\n` +
+      `是否同时恢复库存？\n` +
+      `- 点击"确定"：删除记录并恢复库存\n` +
+      `- 点击"取消"：仅删除记录，不恢复库存`
+    );
+
+    let updatedInventory = inventory;
+    let updatedRecords = records;
+
+    if (restoreStock) {
+      const invItem = inventory.find((inv) =>
+        inv.ship === distRecord.ship &&
+        inv.partName === distRecord.partName &&
+        inv.system === distRecord.system &&
+        inv.location === distRecord.location
+      );
+
+      if (invItem) {
+        const currentStock = Number(invItem.currentStock) || 0;
+        const distQty = Number(distRecord.distQty) || 0;
+        const restoredStock = currentStock + distQty;
+
+        const updatedInvItem = {
+          ...invItem,
+          currentStock: String(restoredStock),
+          lastCheckDate: today,
+        };
+        updatedInventory = inventory.map((inv) => inv.id === invItem.id ? updatedInvItem : inv);
+        persistInventory(updatedInventory);
+
+        logAuditEvent({
+          eventType: AUDIT_EVENT_TYPES.INVENTORY_RESTORE,
+          targetType: 'inventory',
+          targetId: invItem.id,
+          beforeData: invItem,
+          afterData: updatedInvItem,
+          metadata: {
+            restoreQty: distQty,
+            stockBefore: currentStock,
+            stockAfter: restoredStock,
+            reason: '删除发放记录，恢复库存',
+            distRecordId: distRecord.id,
+            applicationId: distRecord.applicationId,
+            ship: distRecord.ship,
+            partName: distRecord.partName,
+            system: distRecord.system,
+            location: distRecord.location,
+          },
+          operator: operatorName,
+        });
+
+        const application = records.find((item) => item.id === distRecord.applicationId);
+        if (application) {
+          const restoredTimelineItem = {
+            status: '库存已恢复',
+            at: today,
+            by: '操作员',
+            comment: `删除发放记录，恢复库存${distQty}件（原发放${distQty}件）`,
+            action: 'inventory-restore',
+            stockBefore: currentStock,
+            stockAfter: restoredStock,
+            inventoryChange: `+${distQty}`,
+          };
+
+          let updatedApplication;
+          if (application.status === '已发放') {
+            updatedApplication = {
+              ...application,
+              status: '已批准',
+              hasBeenDispatched: false,
+              distribution: null,
+              timeline: [...(application.timeline || []), restoredTimelineItem],
+            };
+          } else {
+            updatedApplication = {
+              ...application,
+              timeline: [...(application.timeline || []), restoredTimelineItem],
+            };
+          }
+
+          updatedRecords = records.map((item) => item.id === application.id ? updatedApplication : item);
+          persist(updatedRecords);
+
+          logAuditEvent({
+            eventType: AUDIT_EVENT_TYPES.UPDATE_STATUS,
+            targetType: 'record',
+            targetId: application.id,
+            beforeData: application,
+            afterData: updatedApplication,
+            metadata: {
+              oldStatus: application.status,
+              newStatus: updatedApplication.status,
+              reason: '删除发放记录，恢复库存',
+              restoreQty: distQty,
+              distRecordId: distRecord.id,
+            },
+            operator: operatorName,
+          });
+
+          if (selected?.id === application.id) {
+            setSelected(updatedRecords.find((item) => item.id === application.id));
+          }
+          if (selectedApproval?.id === application.id) {
+            setSelectedApproval(updatedRecords.find((item) => item.id === application.id));
+          }
+        }
+
+        if (selectedInv?.id === invItem.id) {
+          setSelectedInv(updatedInventory.find((inv) => inv.id === invItem.id));
+        }
+      }
+    }
+
+    const nextDist = distRecords.filter((d) => d.id !== distId);
+    persistDist(nextDist);
+
+    if (selectedDist?.id === distId) {
+      setSelectedDist(null);
+    }
+  }
+
   function addDistribution(event) {
     event.preventDefault();
     if (!distForm.applicationId) return;
@@ -1964,6 +2090,26 @@ function App() {
     if (!application) return;
     if (wasDispatched(application)) return;
     if (application.status !== '已批准') return;
+
+    const distQty = Number(distForm.distQty) || 0;
+    if (distQty <= 0) {
+      alert('发放数量必须大于0');
+      return;
+    }
+
+    const invItem = findInventoryItem(application);
+    if (!invItem) {
+      alert(`库存台账中未找到该备件记录（${application.ship} / ${application.partName} / ${application.system} / ${application.location}），请先在库存台账中添加该备件后再进行发放。`);
+      return;
+    }
+
+    const currentStock = Number(invItem.currentStock) || 0;
+    if (currentStock < distQty) {
+      const shortage = distQty - currentStock;
+      alert(`库存不足，无法发放。当前库存：${currentStock}件，申请发放：${distQty}件，差额：${shortage}件。请先补充库存。`);
+      return;
+    }
+
     const distRecord = {
       id: uid(),
       applicationId: distForm.applicationId,
@@ -1977,9 +2123,21 @@ function App() {
       receiver: distForm.receiver,
       distributor: distForm.distributor,
       distNote: distForm.distNote,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      inventoryId: invItem.id,
+      stockBeforeDeduct: currentStock,
+      stockAfterDeduct: currentStock - distQty,
     };
     persistDist([distRecord, ...distRecords]);
+
+    const updatedInvItem = {
+      ...invItem,
+      currentStock: String(currentStock - distQty),
+      lastCheckDate: today,
+    };
+    const updatedInventory = inventory.map((inv) => inv.id === invItem.id ? updatedInvItem : inv);
+    persistInventory(updatedInventory);
+
     const updatedItem = {
       ...application,
       status: '已发放',
@@ -1992,7 +2150,10 @@ function App() {
         distQty: distForm.distQty,
         receiver: distForm.receiver || '',
         comment: distForm.distNote || '',
-        action: 'dispatch'
+        action: 'dispatch',
+        stockBefore: currentStock,
+        stockAfter: currentStock - distQty,
+        inventoryChange: `-${distQty}`,
       }]
     };
     const updatedRecords = records.map((item) => item.id === distForm.applicationId ? updatedItem : item);
@@ -2011,6 +2172,34 @@ function App() {
         distRecordId: distRecord.id,
         ship: application.ship,
         partName: application.partName,
+        system: application.system,
+        location: application.location,
+        stockBefore: currentStock,
+        stockAfter: currentStock - distQty,
+        inventoryId: invItem.id,
+      },
+      operator: distForm.distributor || operatorName,
+    });
+
+    logAuditEvent({
+      eventType: AUDIT_EVENT_TYPES.INVENTORY_DEDUCT,
+      targetType: 'inventory',
+      targetId: invItem.id,
+      beforeData: invItem,
+      afterData: updatedInvItem,
+      metadata: {
+        deductQty: distQty,
+        stockBefore: currentStock,
+        stockAfter: currentStock - distQty,
+        reason: '发放出库',
+        distRecordId: distRecord.id,
+        applicationId: application.id,
+        ship: application.ship,
+        partName: application.partName,
+        system: application.system,
+        location: application.location,
+        distributor: distForm.distributor || '操作员',
+        receiver: distForm.receiver || '',
       },
       operator: distForm.distributor || operatorName,
     });
@@ -2021,6 +2210,9 @@ function App() {
     }
     if (selectedApproval?.id === distForm.applicationId) {
       setSelectedApproval(updatedRecords.find((item) => item.id === distForm.applicationId));
+    }
+    if (selectedInv?.id === invItem.id) {
+      setSelectedInv(updatedInventory.find((inv) => inv.id === invItem.id));
     }
     setDistForm({ ...distConfig.defaultValues, applicationId: '' });
     setSelectedDist(distRecord);
@@ -2825,6 +3017,7 @@ function App() {
                               {ev.approvedQty && <p className="audit-timeline-detail">批准数量：{ev.approvedQty}</p>}
                               {ev.distQty && <p className="audit-timeline-detail">发放数量：{ev.distQty}</p>}
                               {ev.receiver && <p className="audit-timeline-detail">领取人：{ev.receiver}</p>}
+                              {ev.inventoryChange && <p className="audit-timeline-detail">库存变更：{ev.inventoryChange}（{ev.stockBefore} → {ev.stockAfter}）</p>}
                               {ev.metadata && typeof ev.metadata === 'object' && Object.keys(ev.metadata).length > 0 && ev.source === 'audit' && (
                                 <div className="audit-timeline-meta-box">
                                   {Object.entries(ev.metadata).map(([k, v]) => (
@@ -3438,6 +3631,9 @@ function App() {
                             {step.receiver && (
                               <p className="timeline-detail">领取人: {step.receiver}</p>
                             )}
+                            {step.inventoryChange && (
+                              <p className="timeline-detail">库存变更: {step.inventoryChange}（{step.stockBefore} → {step.stockAfter}）</p>
+                            )}
                             {step.comment && (
                               <p className="timeline-detail">意见: {step.comment}</p>
                             )}
@@ -3667,12 +3863,59 @@ function App() {
                 </label>
                 {distForm.applicationId && (() => {
                   const app = records.find((item) => item.id === distForm.applicationId);
-                  return app ? (
-                    <div className="wide dist-app-preview">
-                      <span className="dist-app-label">申请信息</span>
-                      <span>{app.partName} | {app.system} · {app.location} | 需求{app.qty} | {app.urgency}紧急</span>
-                    </div>
-                  ) : null;
+                  if (!app) return null;
+                  const invStatus = getInventoryStatus(app);
+                  const distQty = Number(distForm.distQty) || 0;
+                  const remaining = invStatus.stockInfo ? Number(invStatus.stockInfo.currentStock) - distQty : 0;
+                  return (
+                    <>
+                      <div className="wide dist-app-preview">
+                        <span className="dist-app-label">申请信息</span>
+                        <span>{app.partName} | {app.system} · {app.location} | 需求{app.qty} | {app.urgency}紧急</span>
+                      </div>
+                      <div className="wide stock-info">
+                        {invStatus.noRecord ? (
+                          <div className="stock-item stock-low">
+                            <AlertTriangle size={16} />
+                            <span>库存台账未找到该备件，请先添加库存记录</span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="stock-item">
+                              <span>当前库存</span>
+                              <strong className={invStatus.lowStock ? 'stock-low' : 'stock-ok'}>
+                                {invStatus.stockInfo?.currentStock || 0} 件
+                              </strong>
+                            </div>
+                            <div className="stock-item">
+                              <span>安全库存</span>
+                              <strong>{invStatus.stockInfo?.safetyStock || 0} 件</strong>
+                            </div>
+                            {distQty > 0 && (
+                              <div className="stock-item">
+                                <span>发放后剩余</span>
+                                <strong className={remaining < 0 ? 'stock-low' : remaining < Number(invStatus.stockInfo?.safetyStock || 0) ? 'stock-warning' : 'stock-ok'}>
+                                  {remaining} 件
+                                </strong>
+                              </div>
+                            )}
+                            {invStatus.lowStock && (
+                              <div className="stock-item stock-warning" style={{ gridColumn: '1 / -1' }}>
+                                <AlertTriangle size={16} />
+                                <span>库存低于安全库存或需求量，发放需谨慎</span>
+                              </div>
+                            )}
+                            {distQty > 0 && remaining < 0 && (
+                              <div className="stock-item stock-low" style={{ gridColumn: '1 / -1' }}>
+                                <AlertOctagon size={16} />
+                                <span>发放数量超过当前库存，差额 {Math.abs(remaining)} 件，无法发放</span>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </>
+                  );
                 })()}
                 {distConfig.fields.map((field) => (
                   <label key={field.key} className={field.type === 'textarea' ? 'wide' : ''}>
@@ -3714,11 +3957,7 @@ function App() {
                       </p>
                       {item.distNote && <p className="record-detail">{`备注: ${item.distNote}`}</p>}
                       <div className="actions" onClick={(event) => event.stopPropagation()}>
-                        <button className="ghost-danger" type="button" onClick={() => {
-                          const next = distRecords.filter((d) => d.id !== item.id);
-                          persistDist(next);
-                          if (selectedDist?.id === item.id) setSelectedDist(null);
-                        }}><Trash2 size={14} />删除</button>
+                        <button className="ghost-danger" type="button" onClick={() => removeDistribution(item.id)}><Trash2 size={14} />删除</button>
                       </div>
                     </article>
                   ))
@@ -3768,6 +4007,20 @@ function App() {
                       <span>发放数量</span>
                       <strong className="dist-qty">{selectedDist.distQty}</strong>
                     </div>
+                    {selectedDist.stockBeforeDeduct !== undefined && (
+                      <div className="stock-item">
+                        <span>发放前库存</span>
+                        <strong>{selectedDist.stockBeforeDeduct}</strong>
+                      </div>
+                    )}
+                    {selectedDist.stockAfterDeduct !== undefined && (
+                      <div className="stock-item">
+                        <span>发放后库存</span>
+                        <strong className={Number(selectedDist.stockAfterDeduct) <= 0 ? 'stock-low' : 'stock-ok'}>
+                          {selectedDist.stockAfterDeduct}
+                        </strong>
+                      </div>
+                    )}
                   </div>
                   <div className="dist-field-list">
                     <div className="dist-field">
