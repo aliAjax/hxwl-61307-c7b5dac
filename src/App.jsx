@@ -1,6 +1,30 @@
-import { useMemo, useState, useRef } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download } from 'lucide-react';
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download, Wifi, WifiOff, Database, Cloud, CloudOff, AlertOctagon, ChevronDown, ChevronRight, Server, UserX, Layers, Activity, Save, RotateCcw, Hand } from 'lucide-react';
 import './App.css';
+import {
+  OP_TYPES,
+  CONFLICT_TYPES,
+  RESOLUTION_STRATEGIES,
+  loadSyncQueue,
+  saveSyncQueue,
+  loadConflicts,
+  saveConflicts,
+  loadBaseline,
+  saveBaseline,
+  loadSyncMeta,
+  saveSyncMeta,
+  enqueueOperation,
+  removeFromQueue,
+  getPendingOperations,
+  getCompletedOperations,
+  takeBaseline,
+  detectConflicts,
+  autoResolveConflict,
+  applyConflictResolution,
+  generateRemoteSnapshot,
+  simulateServerLatency,
+  clearAllSyncData,
+} from './syncEngine';
 
 const appConfig = {
   "id": "hxwl-61307",
@@ -511,6 +535,301 @@ function App() {
   const [selectedApproval, setSelectedApproval] = useState(null);
   const [approvalError, setApprovalError] = useState('');
 
+  const [isOnline, setIsOnline] = useState(() => {
+    const meta = loadSyncMeta();
+    if (meta.forcedOffline) return false;
+    return typeof navigator !== 'undefined' ? navigator.onLine : true;
+  });
+  const [forcedOffline, setForcedOffline] = useState(() => loadSyncMeta().forcedOffline);
+  const [syncQueue, setSyncQueue] = useState(() => loadSyncQueue());
+  const [conflicts, setConflicts] = useState(() => loadConflicts());
+  const [syncMeta, setSyncMetaState] = useState(() => loadSyncMeta());
+  const [baseline, setBaseline] = useState(() => {
+    const b = loadBaseline();
+    if (Object.keys(b).length === 0) {
+      const fresh = takeBaseline(loadRecords());
+      return fresh;
+    }
+    return b;
+  });
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0, message: '' });
+  const [showConflictModal, setShowConflictModal] = useState(false);
+  const [selectedConflict, setSelectedConflict] = useState(null);
+  const [syncTab, setSyncTab] = useState('queue');
+  const [syncLog, setSyncLog] = useState([]);
+  const [expandedConflicts, setExpandedConflicts] = useState({});
+
+  const pendingCount = getPendingOperations().length;
+  const unresolvedConflictCount = conflicts.filter((c) => !c.resolved).length;
+
+  const refreshSyncState = useCallback(() => {
+    setSyncQueue(loadSyncQueue());
+    setConflicts(loadConflicts());
+    setSyncMetaState(loadSyncMeta());
+    setBaseline(loadBaseline());
+  }, []);
+
+  const setSyncMeta = useCallback((next) => {
+    const merged = { ...loadSyncMeta(), ...next };
+    saveSyncMeta(merged);
+    setSyncMetaState(merged);
+  }, []);
+
+  const toggleForceOffline = useCallback(() => {
+    const next = !forcedOffline;
+    setForcedOffline(next);
+    setIsOnline(next ? false : (typeof navigator !== 'undefined' ? navigator.onLine : true));
+    setSyncMeta({ forcedOffline: next });
+  }, [forcedOffline, setSyncMeta]);
+
+  const addLog = useCallback((type, message) => {
+    setSyncLog((prev) => [
+      { id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), type, message, at: Date.now() },
+      ...prev.slice(0, 99),
+    ]);
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      if (!forcedOffline) {
+        setIsOnline(true);
+        addLog('info', '检测到网络恢复为在线状态');
+      }
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      addLog('warn', '检测到网络断开，进入离线模式');
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [forcedOffline, addLog]);
+
+  useEffect(() => {
+    const existing = loadBaseline();
+    if (Object.keys(existing).length === 0) {
+      const fresh = takeBaseline(records);
+      setBaseline(fresh);
+      addLog('info', '已创建初始数据基线（' + records.length + '条记录）');
+    }
+  }, []);
+
+  const enqueueAndRefresh = useCallback((operation) => {
+    const op = enqueueOperation(operation);
+    refreshSyncState();
+    addLog(
+      operation.type === OP_TYPES.CREATE ? 'create' :
+      operation.type === OP_TYPES.DELETE ? 'delete' : 'update',
+      `已记录离线操作：${describeOperation(operation)}`
+    );
+    return op;
+  }, [refreshSyncState, addLog]);
+
+  function describeOperation(op) {
+    const t = op.type;
+    const payload = op.payload || {};
+    switch (t) {
+      case OP_TYPES.CREATE:
+        return `创建申请「${payload.partName || payload.record?.partName || '未知'}」`;
+      case OP_TYPES.UPDATE_STATUS:
+        return `变更状态「${payload.fromStatus} → ${payload.toStatus}」`;
+      case OP_TYPES.APPROVE:
+        return `批准申请（数量${payload.approvedQty || '-'}）`;
+      case OP_TYPES.REJECT:
+        return `驳回申请`;
+      case OP_TYPES.DELETE:
+        return `删除申请记录`;
+      case OP_TYPES.DISPATCH:
+        return `发放出库`;
+      default:
+        return t;
+    }
+  }
+
+  const safePersist = useCallback((next) => {
+    persist(next);
+  }, []);
+
+  const performSync = useCallback(async () => {
+    if (isSyncing) return;
+    if (!isOnline) {
+      addLog('error', '当前处于离线状态，无法同步');
+      return;
+    }
+    setIsSyncing(true);
+    addLog('info', '开始执行同步流程...');
+
+    try {
+      const pendingOps = getPendingOperations();
+      const currentBaseline = loadBaseline();
+      const currentRecords = records;
+
+      addLog('info', `待同步操作：${pendingOps.length}条`);
+      setSyncProgress({ current: 0, total: pendingOps.length + 3, message: '生成服务端快照（模拟）...' });
+      await simulateServerLatency();
+
+      const remoteSnapshot = generateRemoteSnapshot(currentRecords, currentBaseline);
+      addLog('info', `服务端快照生成完成（${remoteSnapshot.length}条记录）`);
+      setSyncProgress({ current: 1, total: pendingOps.length + 3, message: '检测数据冲突...' });
+
+      const detectedConflicts = detectConflicts(pendingOps, currentBaseline, remoteSnapshot);
+      addLog('warn', `检测到${detectedConflicts.length}个冲突，正在处理...`);
+
+      const existingConflicts = loadConflicts();
+      const unresolvedIds = new Set(existingConflicts.filter((c) => !c.resolved).map((c) => c.id.split('_dup')[0]));
+      let allConflicts = [...existingConflicts];
+      detectedConflicts.forEach((dc) => {
+        const matchKey = `${dc.type}-${dc.targetId}`;
+        if (!unresolvedIds.has(matchKey)) {
+          allConflicts.push(dc);
+          unresolvedIds.add(matchKey);
+        }
+      });
+      saveConflicts(allConflicts);
+      setConflicts(allConflicts);
+
+      setSyncProgress({ current: 2, total: pendingOps.length + 3, message: '自动解决可处理冲突...' });
+      await simulateServerLatency();
+
+      let workingRecords = [...currentRecords];
+      let opsToRemoveIds = new Set();
+      const conflictOpsIds = new Set();
+
+      allConflicts.forEach((c) => {
+        (c.affectedOps || []).forEach((id) => conflictOpsIds.add(id));
+      });
+
+      const unresolvedConfs = [];
+      for (let i = 0; i < allConflicts.length; i++) {
+        const c = allConflicts[i];
+        if (c.resolved) continue;
+        const autoRes = autoResolveConflict(c);
+        if (autoRes.resolved) {
+          allConflicts[i] = autoRes.conflict;
+          const strat = autoRes.conflict.resolution.strategy;
+          const applied = applyConflictResolution(autoRes.conflict, strat, workingRecords);
+          if (applied.applied) {
+            workingRecords = applied.records;
+            applied.opsToRemove.forEach((id) => opsToRemoveIds.add(id));
+            addLog('success', `自动解决冲突：${c.description} → ${applied.note}`);
+          }
+        } else {
+          unresolvedConfs.push(c);
+        }
+      }
+      saveConflicts(allConflicts);
+      setConflicts(allConflicts);
+
+      setSyncProgress({ current: 3, total: pendingOps.length + 3, message: '同步无冲突操作...' });
+      let syncedCount = 0;
+      const queue = loadSyncQueue();
+      const updatedQueue = queue.map((op) => {
+        if (op.synced) return op;
+        if (opsToRemoveIds.has(op.id)) {
+          syncedCount += 1;
+          return { ...op, synced: true, syncAttempts: op.syncAttempts + 1, error: null, syncedAt: Date.now(), removedByConflict: true };
+        }
+        if (conflictOpsIds.has(op.id)) return op;
+        syncedCount += 1;
+        return { ...op, synced: true, syncAttempts: op.syncAttempts + 1, error: null, syncedAt: Date.now() };
+      });
+      saveSyncQueue(updatedQueue);
+      setSyncQueue(updatedQueue);
+
+      await simulateServerLatency();
+
+      if (syncedCount > 0) {
+        setSyncProgress({ current: pendingOps.length + 3, total: pendingOps.length + 3, message: '更新基线数据...' });
+        const newBaseline = {};
+        workingRecords.forEach((r) => { newBaseline[r.id] = JSON.parse(JSON.stringify(r)); });
+        saveBaseline(newBaseline);
+        setBaseline(newBaseline);
+        safePersist(workingRecords);
+      }
+
+      setSyncMeta({
+        lastSyncAt: Date.now(),
+        lastSyncSuccess: unresolvedConfs.length === 0,
+        syncCount: loadSyncMeta().syncCount + 1,
+      });
+
+      addLog(
+        unresolvedConfs.length === 0 ? 'success' : 'warn',
+        `同步完成：成功${syncedCount}条，剩余${unresolvedConfs.length}个冲突需手动处理`
+      );
+
+      if (unresolvedConfs.length > 0) {
+        setSelectedConflict(unresolvedConfs[0]);
+        setShowConflictModal(true);
+      }
+
+      refreshSyncState();
+    } catch (e) {
+      console.error(e);
+      addLog('error', '同步失败：' + (e.message || String(e)));
+      setSyncMeta({ lastSyncSuccess: false });
+    } finally {
+      setIsSyncing(false);
+      setSyncProgress({ current: 0, total: 0, message: '' });
+    }
+  }, [isSyncing, isOnline, records, addLog, safePersist, refreshSyncState, setSyncMeta]);
+
+  const resolveConflictManually = useCallback((conflictId, strategy) => {
+    const list = loadConflicts();
+    const idx = list.findIndex((c) => c.id === conflictId);
+    if (idx === -1) return;
+    const conflict = list[idx];
+    const resolved = {
+      ...conflict,
+      resolved: true,
+      resolution: {
+        strategy,
+        resolvedAt: Date.now(),
+        by: 'user',
+        note: '用户手动解决',
+      },
+    };
+    list[idx] = resolved;
+    saveConflicts(list);
+    setConflicts(list);
+
+    const applied = applyConflictResolution(resolved, strategy, records);
+    if (applied.applied) {
+      safePersist(applied.records);
+      const queue = loadSyncQueue();
+      const updated = queue.map((op) =>
+        applied.opsToRemove.includes(op.id)
+          ? { ...op, synced: true, removedByConflict: true, syncedAt: Date.now() }
+          : op
+      );
+      saveSyncQueue(updated);
+      addLog('success', `手动解决冲突：${conflict.description} → ${applied.note}`);
+    }
+
+    const remainingUnresolved = list.filter((c) => !c.resolved);
+    if (remainingUnresolved.length > 0) {
+      setSelectedConflict(remainingUnresolved[0]);
+    } else {
+      setShowConflictModal(false);
+      setSelectedConflict(null);
+      performSync().catch(() => {});
+    }
+    refreshSyncState();
+  }, [records, safePersist, addLog, refreshSyncState, performSync]);
+
+  const resetSyncSystem = useCallback(() => {
+    if (!confirm('确认重置整个同步系统？这会清空同步队列、冲突记录和基线，不会影响现有业务数据。')) return;
+    clearAllSyncData();
+    const fresh = takeBaseline(records);
+    setBaseline(fresh);
+    refreshSyncState();
+    addLog('info', '同步系统已重置，已建立新的基线（' + records.length + '条）');
+  }, [records, refreshSyncState, addLog]);
+
   function persist(next) {
     setRecords(next);
     localStorage.setItem(appConfig.storage, JSON.stringify(next));
@@ -574,6 +893,12 @@ function App() {
       nextRecord.temps = [temp];
       if (temp > 2) nextRecord.status = '异常';
     }
+
+    enqueueAndRefresh({
+      type: OP_TYPES.CREATE,
+      targetId: nextRecord.id,
+      payload: { ...nextRecord, record: nextRecord },
+    });
 
     persist([nextRecord, ...records]);
     setForm(appConfig.defaultValues);
@@ -939,6 +1264,12 @@ function App() {
     if (wasDispatched(item)) {
       return;
     }
+    const fromStatus = item.status;
+    enqueueAndRefresh({
+      type: OP_TYPES.UPDATE_STATUS,
+      targetId: id,
+      payload: { fromStatus, toStatus: status, by: '操作员', partName: item.partName },
+    });
     const next = records.map((item) => item.id === id ? {
       ...item,
       status,
@@ -949,6 +1280,14 @@ function App() {
   }
 
   function removeRecord(id) {
+    const item = records.find((r) => r.id === id);
+    if (item) {
+      enqueueAndRefresh({
+        type: OP_TYPES.DELETE,
+        targetId: id,
+        payload: { partName: item.partName, ship: item.ship, originalRecord: item },
+      });
+    }
     const next = records.filter((item) => item.id !== id);
     persist(next);
     if (selected?.id === id) setSelected(null);
@@ -1139,6 +1478,20 @@ function App() {
       setApprovalError('批准数量必须大于0');
       return;
     }
+
+    enqueueAndRefresh({
+      type: OP_TYPES.APPROVE,
+      targetId: id,
+      payload: {
+        fromStatus: item.status,
+        toStatus: '已批准',
+        by: approvalRole,
+        approvedQty: String(approvedQty),
+        comment: approvalComment || '',
+        partName: item.partName,
+      },
+    });
+
     const timelineEntry = {
       status: '已批准',
       at: new Date().toISOString().slice(0, 10),
@@ -1178,6 +1531,19 @@ function App() {
       setApprovalError('驳回时必须填写审批意见');
       return;
     }
+
+    enqueueAndRefresh({
+      type: OP_TYPES.REJECT,
+      targetId: id,
+      payload: {
+        fromStatus: item.status,
+        toStatus: '已驳回',
+        by: approvalRole,
+        comment: approvalComment,
+        partName: item.partName,
+      },
+    });
+
     const timelineEntry = {
       status: '已驳回',
       at: new Date().toISOString().slice(0, 10),
@@ -1585,6 +1951,70 @@ function App() {
           <BarChart3 size={16} />
           需求趋势
         </button>
+        <button
+          className={'tab ' + (activeTab === 'sync' ? 'tab-active' : '')}
+          onClick={() => setActiveTab('sync')}
+        >
+          <RefreshCw size={16} />
+          同步管理
+          {pendingCount > 0 && <span className="tab-badge">{pendingCount}</span>}
+        </button>
+      </div>
+
+      <div className="sync-status-bar">
+        <div className="sync-status-left">
+          <span className={'sync-indicator ' + (isOnline ? 'sync-online' : 'sync-offline')}>
+            {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
+            {isOnline ? '在线' : '离线'}
+          </span>
+          <span className="sync-status-divider">|</span>
+          <span className="sync-status-text">
+            待同步 <strong>{pendingCount}</strong> 条
+            {unresolvedConflictCount > 0 && (
+              <>
+                <span className="sync-status-divider">|</span>
+                <span className="sync-conflict-count">
+                  <AlertTriangle size={12} /> 冲突 <strong>{unresolvedConflictCount}</strong> 个
+                </span>
+              </>
+            )}
+          </span>
+          {syncMeta.lastSyncAt && (
+            <>
+              <span className="sync-status-divider">|</span>
+              <span className="sync-last-sync">
+                上次同步: {new Date(syncMeta.lastSyncAt).toLocaleString('zh-CN')}
+              </span>
+            </>
+          )}
+        </div>
+        <div className="sync-status-right">
+          <button
+            className="sync-toggle-btn"
+            onClick={toggleForceOffline}
+            title={forcedOffline ? '切换到在线模式' : '强制切换到离线模式'}
+          >
+            {forcedOffline ? <Wifi size={14} /> : <WifiOff size={14} />}
+            {forcedOffline ? '恢复在线' : '模拟离线'}
+          </button>
+          <button
+            className="sync-now-btn"
+            onClick={performSync}
+            disabled={!isOnline || isSyncing || pendingCount === 0}
+          >
+            {isSyncing ? (
+              <>
+                <RefreshCw size={14} className="spin" />
+                同步中...
+              </>
+            ) : (
+              <>
+                <Cloud size={14} />
+                立即同步
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {activeTab === 'application' && (
@@ -3271,6 +3701,588 @@ function App() {
             </div>
           </section>
         </>
+      )}
+
+      {activeTab === 'sync' && (
+        <>
+          <section className="metrics sync-metrics">
+            <article className="metric">
+              <span>待同步操作</span>
+              <strong className="metric-pending">{pendingCount}</strong>
+            </article>
+            <article className="metric">
+              <span>已同步操作</span>
+              <strong className="metric-completed">{getCompletedOperations().length}</strong>
+            </article>
+            <article className="metric">
+              <span>未解决冲突</span>
+              <strong className="metric-conflict">{unresolvedConflictCount}</strong>
+            </article>
+            <article className="metric">
+              <span>同步次数</span>
+              <strong>{syncMeta.syncCount || 0}</strong>
+            </article>
+          </section>
+
+          {isSyncing && (
+            <section className="panel sync-progress-panel">
+              <div className="sync-progress-bar-wrapper">
+                <div
+                  className="sync-progress-bar"
+                  style={{
+                    width: syncProgress.total > 0
+                      ? `${(syncProgress.current / syncProgress.total) * 100}%`
+                      : '0%'
+                  }}
+                />
+              </div>
+              <p className="sync-progress-text">
+                <RefreshCw size={14} className="spin" />
+                {syncProgress.message || '正在同步...'}
+                {syncProgress.total > 0 && ` (${syncProgress.current}/${syncProgress.total})`}
+              </p>
+            </section>
+          )}
+
+          <section className="sync-tabs-section">
+            <div className="sync-sub-tabs">
+              <button
+                className={'sync-sub-tab ' + (syncTab === 'queue' ? 'sync-sub-tab-active' : '')}
+                onClick={() => setSyncTab('queue')}
+              >
+                <Database size={14} />
+                同步队列
+                {pendingCount > 0 && <span className="sync-tab-badge">{pendingCount}</span>}
+              </button>
+              <button
+                className={'sync-sub-tab ' + (syncTab === 'conflicts' ? 'sync-sub-tab-active' : '')}
+                onClick={() => setSyncTab('conflicts')}
+              >
+                <AlertOctagon size={14} />
+                冲突管理
+                {unresolvedConflictCount > 0 && (
+                  <span className="sync-tab-badge conflict-badge">{unresolvedConflictCount}</span>
+                )}
+              </button>
+              <button
+                className={'sync-sub-tab ' + (syncTab === 'log' ? 'sync-sub-tab-active' : '')}
+                onClick={() => setSyncTab('log')}
+              >
+                <Activity size={14} />
+                同步日志
+              </button>
+              <button
+                className={'sync-sub-tab ' + (syncTab === 'settings' ? 'sync-sub-tab-active' : '')}
+                onClick={() => setSyncTab('settings')}
+              >
+                <Server size={14} />
+                高级设置
+              </button>
+            </div>
+          </section>
+
+          {syncTab === 'queue' && (
+            <section className="workspace sync-workspace">
+              <section className="panel sync-queue-panel">
+                <div className="panel-title">
+                  <Clock size={18} />
+                  <h2>待同步操作 ({pendingCount})</h2>
+                </div>
+                <div className="sync-queue-list">
+                  {syncQueue.filter(op => !op.synced).length === 0 ? (
+                    <p className="empty">暂无待同步操作。在离线状态下进行的操作会显示在这里。</p>
+                  ) : (
+                    syncQueue
+                      .filter(op => !op.synced)
+                      .sort((a, b) => b.timestamp - a.timestamp)
+                      .map((op) => (
+                        <div key={op.id} className="sync-queue-item">
+                          <div className="sync-queue-icon">
+                            {op.type === OP_TYPES.CREATE && <Plus size={16} />}
+                            {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={16} />}
+                            {op.type === OP_TYPES.APPROVE && <CheckCircle size={16} />}
+                            {op.type === OP_TYPES.REJECT && <XCircle size={16} />}
+                            {op.type === OP_TYPES.DELETE && <Trash2 size={16} />}
+                            {op.type === OP_TYPES.DISPATCH && <Truck size={16} />}
+                          </div>
+                          <div className="sync-queue-info">
+                            <div className="sync-queue-title">
+                              <span className="sync-op-type">{describeOperation(op)}</span>
+                              <span className={'sync-op-status status-pending'}>待同步</span>
+                            </div>
+                            <p className="sync-queue-meta">
+                              {op.payload?.partName || op.payload?.record?.partName || '未知备件'}
+                              <span className="sync-meta-divider">·</span>
+                              {new Date(op.timestamp).toLocaleString('zh-CN')}
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                  )}
+                </div>
+              </section>
+
+              <section className="panel sync-queue-panel">
+                <div className="panel-title">
+                  <CheckCircle2 size={18} />
+                  <h2>已同步操作 ({getCompletedOperations().length})</h2>
+                </div>
+                <div className="sync-queue-list">
+                  {syncQueue.filter(op => op.synced && !op.removedByConflict).length === 0 ? (
+                    <p className="empty">暂无已同步操作。</p>
+                  ) : (
+                    syncQueue
+                      .filter(op => op.synced && !op.removedByConflict)
+                      .sort((a, b) => (b.syncedAt || 0) - (a.syncedAt || 0))
+                      .slice(0, 20)
+                      .map((op) => (
+                        <div key={op.id} className="sync-queue-item synced">
+                          <div className="sync-queue-icon synced-icon">
+                            {op.type === OP_TYPES.CREATE && <Plus size={16} />}
+                            {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={16} />}
+                            {op.type === OP_TYPES.APPROVE && <CheckCircle size={16} />}
+                            {op.type === OP_TYPES.REJECT && <XCircle size={16} />}
+                            {op.type === OP_TYPES.DELETE && <Trash2 size={16} />}
+                            {op.type === OP_TYPES.DISPATCH && <Truck size={16} />}
+                          </div>
+                          <div className="sync-queue-info">
+                            <div className="sync-queue-title">
+                              <span className="sync-op-type">{describeOperation(op)}</span>
+                              <span className={'sync-op-status status-synced'}>已同步</span>
+                            </div>
+                            <p className="sync-queue-meta">
+                              {op.payload?.partName || op.payload?.record?.partName || '未知备件'}
+                              <span className="sync-meta-divider">·</span>
+                              {op.syncedAt ? new Date(op.syncedAt).toLocaleString('zh-CN') : '-'}
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                  )}
+                </div>
+              </section>
+            </section>
+          )}
+
+          {syncTab === 'conflicts' && (
+            <section className="workspace sync-workspace">
+              <section className="panel sync-conflicts-panel">
+                <div className="panel-title">
+                  <AlertOctagon size={18} />
+                  <h2>冲突列表</h2>
+                </div>
+                <div className="sync-conflicts-list">
+                  {conflicts.length === 0 ? (
+                    <p className="empty">暂无冲突记录。同步时如果检测到冲突会显示在这里。</p>
+                  ) : (
+                    conflicts.map((conflict) => (
+                      <div
+                        key={conflict.id}
+                        className={'sync-conflict-item ' + (conflict.resolved ? 'resolved' : '') + ' severity-' + conflict.severity}
+                      >
+                        <div
+                          className="sync-conflict-header"
+                          onClick={() => {
+                            setExpandedConflicts(prev => ({
+                              ...prev,
+                              [conflict.id]: !prev[conflict.id]
+                            }));
+                          }}
+                        >
+                          <div className="sync-conflict-icon">
+                            {conflict.severity === 'error' ? (
+                              <XCircle size={20} />
+                            ) : (
+                              <AlertTriangle size={20} />
+                            )}
+                          </div>
+                          <div className="sync-conflict-info">
+                            <h3 className="sync-conflict-title">{conflict.description}</h3>
+                            <p className="sync-conflict-meta">
+                              <span className={'conflict-type-tag'}>
+                                {conflict.type === CONFLICT_TYPES.MULTIPLE_STATUS_CHANGES && '多次状态变更'}
+                                {conflict.type === CONFLICT_TYPES.DELETE_THEN_APPROVE && '删除后审批'}
+                                {conflict.type === CONFLICT_TYPES.DUPLICATE_PART_NAME && '同名备件重复'}
+                                {conflict.type === CONFLICT_TYPES.REMOTE_DELETED && '服务端已删除'}
+                                {conflict.type === CONFLICT_TYPES.REMOTE_MODIFIED && '服务端已修改'}
+                              </span>
+                              <span className="sync-meta-divider">·</span>
+                              检测于 {new Date(conflict.detectedAt).toLocaleString('zh-CN')}
+                              <span className="sync-meta-divider">·</span>
+                              {conflict.resolved ? (
+                                <span className="conflict-resolved-badge">
+                                  <CheckCircle size={12} />
+                                  已解决
+                                </span>
+                              ) : (
+                                <span className="conflict-unresolved-badge">
+                                  <AlertTriangle size={12} />
+                                  待处理
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                          <div className="sync-conflict-expand">
+                            {expandedConflicts[conflict.id] ? (
+                              <ChevronDown size={20} />
+                            ) : (
+                              <ChevronRight size={20} />
+                            )}
+                          </div>
+                        </div>
+
+                        {expandedConflicts[conflict.id] && (
+                          <div className="sync-conflict-detail">
+                            <div className="conflict-detail-section">
+                              <h4>本地操作</h4>
+                              <div className="conflict-ops-list">
+                                {(conflict.localOperations || []).map((op, idx) => (
+                                  <div key={idx} className="conflict-op-item">
+                                    <div className="conflict-op-icon">
+                                      {op.type === OP_TYPES.CREATE && <Plus size={14} />}
+                                      {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={14} />}
+                                      {op.type === OP_TYPES.APPROVE && <CheckCircle size={14} />}
+                                      {op.type === OP_TYPES.REJECT && <XCircle size={14} />}
+                                      {op.type === OP_TYPES.DELETE && <Trash2 size={14} />}
+                                    </div>
+                                    <div className="conflict-op-info">
+                                      <span className="conflict-op-type">
+                                        {op.type === OP_TYPES.CREATE && '创建'}
+                                        {op.type === OP_TYPES.UPDATE_STATUS && '更新状态'}
+                                        {op.type === OP_TYPES.APPROVE && '批准'}
+                                        {op.type === OP_TYPES.REJECT && '驳回'}
+                                        {op.type === OP_TYPES.DELETE && '删除'}
+                                      </span>
+                                      {op.fromStatus && op.toStatus && (
+                                        <span className="conflict-op-status-change">
+                                          {op.fromStatus} → {op.toStatus}
+                                        </span>
+                                      )}
+                                      <span className="conflict-op-time">
+                                        {op.at ? new Date(op.at).toLocaleString('zh-CN') : ''}
+                                      </span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            {conflict.remoteRecord && (
+                              <div className="conflict-detail-section">
+                                <h4>服务端数据</h4>
+                                <div className="conflict-remote-record">
+                                  <p><strong>{conflict.remoteRecord.partName}</strong></p>
+                                  <p>{conflict.remoteRecord.ship} · {conflict.remoteRecord.system}</p>
+                                  <p>状态: {conflict.remoteRecord.status}</p>
+                                  <p>数量: {conflict.remoteRecord.qty}</p>
+                                </div>
+                              </div>
+                            )}
+
+                            {conflict.resolution && (
+                              <div className="conflict-detail-section">
+                                <h4>解决方案</h4>
+                                <div className="conflict-resolution-info">
+                                  <p>
+                                    策略: {
+                                      conflict.resolution.strategy === RESOLUTION_STRATEGIES.KEEP_LOCAL ? '保留本地' :
+                                      conflict.resolution.strategy === RESOLUTION_STRATEGIES.KEEP_REMOTE ? '保留服务端' :
+                                      conflict.resolution.strategy === RESOLUTION_STRATEGIES.KEEP_BOTH ? '保留两者' :
+                                      conflict.resolution.strategy === RESOLUTION_STRATEGIES.MERGE ? '合并' :
+                                      conflict.resolution.strategy
+                                    }
+                                  </p>
+                                  <p>解决者: {conflict.resolution.by === 'system' ? '系统自动' : '用户手动'}</p>
+                                  <p>
+                                    解决时间: {conflict.resolution.resolvedAt
+                                      ? new Date(conflict.resolution.resolvedAt).toLocaleString('zh-CN')
+                                      : '-'}
+                                  </p>
+                                  {conflict.resolution.note && (
+                                    <p>备注: {conflict.resolution.note}</p>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            {!conflict.resolved && (
+                              <div className="conflict-detail-section">
+                                <h4>选择解决方案</h4>
+                                <div className="conflict-resolution-options">
+                                  {(conflict.options || []).length > 0 ? (
+                                    conflict.options.map((option, idx) => (
+                                      <button
+                                        key={idx}
+                                        className="conflict-resolution-btn"
+                                        onClick={() => resolveConflictManually(conflict.id, option.strategy)}
+                                      >
+                                        <div className="resolution-option-title">{option.label}</div>
+                                        <div className="resolution-option-desc">{option.description}</div>
+                                      </button>
+                                    ))
+                                  ) : (
+                                    <>
+                                      <button
+                                        className="conflict-resolution-btn"
+                                        onClick={() => resolveConflictManually(conflict.id, RESOLUTION_STRATEGIES.KEEP_LOCAL)}
+                                      >
+                                        <div className="resolution-option-title">保留本地版本</div>
+                                        <div className="resolution-option-desc">使用本地修改覆盖服务端数据</div>
+                                      </button>
+                                      <button
+                                        className="conflict-resolution-btn"
+                                        onClick={() => resolveConflictManually(conflict.id, RESOLUTION_STRATEGIES.KEEP_REMOTE)}
+                                      >
+                                        <div className="resolution-option-title">保留服务端版本</div>
+                                        <div className="resolution-option-desc">丢弃本地修改，使用服务端数据</div>
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </section>
+          )}
+
+          {syncTab === 'log' && (
+            <section className="workspace sync-workspace">
+              <section className="panel sync-log-panel">
+                <div className="panel-title">
+                  <Activity size={18} />
+                  <h2>同步日志</h2>
+                </div>
+                <div className="sync-log-list">
+                  {syncLog.length === 0 ? (
+                    <p className="empty">暂无同步日志。</p>
+                  ) : (
+                    syncLog.map((log) => (
+                      <div key={log.id} className={'sync-log-item log-' + log.type}>
+                        <div className="sync-log-icon">
+                          {log.type === 'info' && <Info size={14} />}
+                          {log.type === 'success' && <CheckCircle size={14} />}
+                          {log.type === 'warn' && <AlertTriangle size={14} />}
+                          {log.type === 'error' && <XCircle size={14} />}
+                          {log.type === 'create' && <Plus size={14} />}
+                          {log.type === 'update' && <RefreshCw size={14} />}
+                          {log.type === 'delete' && <Trash2 size={14} />}
+                        </div>
+                        <div className="sync-log-content">
+                          <p className="sync-log-message">{log.message}</p>
+                          <span className="sync-log-time">
+                            {new Date(log.at).toLocaleString('zh-CN')}
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </section>
+          )}
+
+          {syncTab === 'settings' && (
+            <section className="workspace sync-workspace">
+              <section className="panel sync-settings-panel">
+                <div className="panel-title">
+                  <Server size={18} />
+                  <h2>高级设置</h2>
+                </div>
+                <div className="sync-settings-list">
+                  <div className="sync-setting-item">
+                    <div className="sync-setting-info">
+                      <h3>基线数据</h3>
+                      <p>当前基线记录数: {Object.keys(baseline).length} 条</p>
+                      <p className="setting-hint">基线是上一次同步时的数据快照，用于冲突检测</p>
+                    </div>
+                    <button
+                      className="ghost"
+                      onClick={() => {
+                        const fresh = takeBaseline(records);
+                        setBaseline(fresh);
+                        addLog('info', '已重新建立数据基线（' + records.length + '条）');
+                      }}
+                    >
+                      <Save size={14} />
+                      重建基线
+                    </button>
+                  </div>
+
+                  <div className="sync-setting-item">
+                    <div className="sync-setting-info">
+                      <h3>同步元数据</h3>
+                      <p>同步次数: {syncMeta.syncCount || 0}</p>
+                      <p>上次同步: {syncMeta.lastSyncAt ? new Date(syncMeta.lastSyncAt).toLocaleString('zh-CN') : '从未同步'}</p>
+                      <p>上次同步状态: {syncMeta.lastSyncSuccess ? '成功' : '失败'}</p>
+                    </div>
+                  </div>
+
+                  <div className="sync-setting-item danger-zone">
+                    <div className="sync-setting-info">
+                      <h3><Hand size={16} /> 危险操作</h3>
+                      <p>重置同步系统会清空所有同步队列、冲突记录和基线数据，但不会影响业务数据。</p>
+                    </div>
+                    <button
+                      className="ghost-danger"
+                      onClick={resetSyncSystem}
+                    >
+                      <RotateCcw size={14} />
+                      重置同步系统
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </section>
+          )}
+        </>
+      )}
+
+      {showConflictModal && selectedConflict && (
+        <div className="conflict-modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowConflictModal(false)}>
+          <div className="conflict-modal">
+            <div className="conflict-modal-header">
+              <div className="conflict-modal-title">
+                <AlertOctagon size={22} />
+                <h2>冲突详情</h2>
+              </div>
+              <button
+                className="conflict-modal-close"
+                type="button"
+                onClick={() => { setShowConflictModal(false); setSelectedConflict(null); }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="conflict-modal-body">
+              <div className={'conflict-modal-severity severity-' + selectedConflict.severity}>
+                {selectedConflict.severity === 'error' ? <XCircle size={24} /> : <AlertTriangle size={24} />}
+                <div>
+                  <h3>{selectedConflict.description}</h3>
+                  <p>
+                    冲突类型: {
+                      selectedConflict.type === CONFLICT_TYPES.MULTIPLE_STATUS_CHANGES ? '多次状态变更' :
+                      selectedConflict.type === CONFLICT_TYPES.DELETE_THEN_APPROVE ? '删除后审批' :
+                      selectedConflict.type === CONFLICT_TYPES.DUPLICATE_PART_NAME ? '同名备件重复' :
+                      selectedConflict.type === CONFLICT_TYPES.REMOTE_DELETED ? '服务端已删除' :
+                      selectedConflict.type === CONFLICT_TYPES.REMOTE_MODIFIED ? '服务端已修改' :
+                      selectedConflict.type
+                    }
+                  </p>
+                </div>
+              </div>
+
+              <div className="conflict-modal-section">
+                <h4>本地操作记录</h4>
+                <div className="conflict-ops-list">
+                  {(selectedConflict.localOperations || []).map((op, idx) => (
+                    <div key={idx} className="conflict-op-item">
+                      <div className="conflict-op-icon">
+                        {op.type === OP_TYPES.CREATE && <Plus size={14} />}
+                        {op.type === OP_TYPES.UPDATE_STATUS && <RefreshCw size={14} />}
+                        {op.type === OP_TYPES.APPROVE && <CheckCircle size={14} />}
+                        {op.type === OP_TYPES.REJECT && <XCircle size={14} />}
+                        {op.type === OP_TYPES.DELETE && <Trash2 size={14} />}
+                      </div>
+                      <div className="conflict-op-info">
+                        <span className="conflict-op-type">
+                          {op.type === OP_TYPES.CREATE && '创建'}
+                          {op.type === OP_TYPES.UPDATE_STATUS && '更新状态'}
+                          {op.type === OP_TYPES.APPROVE && '批准'}
+                          {op.type === OP_TYPES.REJECT && '驳回'}
+                          {op.type === OP_TYPES.DELETE && '删除'}
+                        </span>
+                        {op.fromStatus && op.toStatus && (
+                          <span className="conflict-op-status-change">
+                            {op.fromStatus} → {op.toStatus}
+                          </span>
+                        )}
+                        <span className="conflict-op-time">
+                          {op.at ? new Date(op.at).toLocaleString('zh-CN') : ''}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {selectedConflict.remoteRecord && (
+                <div className="conflict-modal-section">
+                  <h4>服务端数据</h4>
+                  <div className="conflict-remote-record">
+                    <p><strong>{selectedConflict.remoteRecord.partName}</strong></p>
+                    <p>{selectedConflict.remoteRecord.ship} · {selectedConflict.remoteRecord.system} · {selectedConflict.remoteRecord.location}</p>
+                    <p>状态: {selectedConflict.remoteRecord.status} · 数量: {selectedConflict.remoteRecord.qty}</p>
+                  </div>
+                </div>
+              )}
+
+              {selectedConflict.resolutionReason && (
+                <div className="conflict-modal-section">
+                  <h4>建议方案</h4>
+                  <p className="conflict-recommendation">{selectedConflict.resolutionReason}</p>
+                </div>
+              )}
+
+              <div className="conflict-modal-section">
+                <h4>选择解决方案</h4>
+                <div className="conflict-resolution-options">
+                  {(selectedConflict.options || []).length > 0 ? (
+                    selectedConflict.options.map((option, idx) => (
+                      <button
+                        key={idx}
+                        className="conflict-resolution-btn"
+                        onClick={() => {
+                          resolveConflictManually(selectedConflict.id, option.strategy);
+                        }}
+                      >
+                        <div className="resolution-option-title">{option.label}</div>
+                        <div className="resolution-option-desc">{option.description}</div>
+                      </button>
+                    ))
+                  ) : (
+                    <>
+                      <button
+                        className="conflict-resolution-btn"
+                        onClick={() => {
+                          resolveConflictManually(selectedConflict.id, RESOLUTION_STRATEGIES.KEEP_LOCAL);
+                        }}
+                      >
+                        <div className="resolution-option-title">保留本地版本</div>
+                        <div className="resolution-option-desc">使用本地修改覆盖服务端数据</div>
+                      </button>
+                      <button
+                        className="conflict-resolution-btn"
+                        onClick={() => {
+                          resolveConflictManually(selectedConflict.id, RESOLUTION_STRATEGIES.KEEP_REMOTE);
+                        }}
+                      >
+                        <div className="resolution-option-title">保留服务端版本</div>
+                        <div className="resolution-option-desc">丢弃本地修改，使用服务端数据</div>
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="conflict-modal-footer">
+              <button
+                type="button"
+                className="conflict-cancel-btn"
+                onClick={() => { setShowConflictModal(false); setSelectedConflict(null); }}
+              >
+                稍后处理
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showImportModal && (
