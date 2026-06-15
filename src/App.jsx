@@ -618,11 +618,195 @@ function App() {
   const [trendSystemFilter, setTrendSystemFilter] = useState('全部');
 
   const [showImportModal, setShowImportModal] = useState(false);
+  const [importType, setImportType] = useState('application');
   const [importText, setImportText] = useState('');
   const [importPreview, setImportPreview] = useState(null);
   const [importTab, setImportTab] = useState('paste');
   const [importPreviewTab, setImportPreviewTab] = useState('valid');
   const fileInputRef = useRef(null);
+
+  const importTypeConfigs = {
+    application: {
+      label: '备件申请',
+      config: appConfig,
+      fieldAliasMap: {
+        'ship': ['所属船舶', '船舶', '船名', 'ship', 'vessel'],
+        'partName': ['备件名称', '备件', '配件名称', '配件', '零件名称', 'partname', 'part', 'name'],
+        'system': ['设备系统', '系统', '所属系统', 'system'],
+        'location': ['船舶位置', '位置', '存放位置', '库位', 'location', 'position'],
+        'qty': ['需求数量', '数量', '申请数量', 'qty', 'quantity', 'count'],
+        'urgency': ['紧急程度', '紧急', '优先级', 'urgency', 'priority'],
+        'reason': ['申请原因', '原因', '备注', '说明', 'reason', 'remark', 'note'],
+        'status': ['状态', '申请状态', 'status']
+      },
+      requiredFields: ['ship', 'partName', 'system', 'location', 'qty', 'urgency', 'reason'],
+      sampleFilename: '备件申请导入示例.csv',
+      auditEventType: AUDIT_EVENT_TYPES.IMPORT,
+      targetType: 'record',
+      getExistingRecords: () => records,
+      persistFn: persist,
+      duplicateCheck: (record, existing) => existing.some(r =>
+        r.ship === record.ship && r.partName === record.partName &&
+        r.system === record.system && r.location === record.location && !wasDispatched(r)
+      ),
+      internalDuplicateCheck: (a, b) =>
+        a.ship === b.ship && a.partName === b.partName &&
+        a.system === b.system && a.location === b.location,
+      duplicateLabel: '同一船舶、同一备件、同一系统、同一位置',
+      existingDuplicateLabel: '与现有申请记录重复（同一船舶、同一备件、同一系统、同一位置且未发放）',
+      extraValidate: (record, errors) => {
+        if (record.ship && !appConfig.ships.includes(record.ship)) {
+          errors.push(`船舶"${record.ship}"不在允许列表中，可选：${appConfig.ships.join('、')}`);
+        }
+        if (record.system) {
+          const opts = appConfig.fields.find(f => f.key === 'system')?.options || [];
+          if (!opts.includes(record.system)) errors.push(`设备系统"${record.system}"不在允许列表中，可选：${opts.join('、')}`);
+        }
+        if (record.urgency) {
+          const opts = appConfig.fields.find(f => f.key === 'urgency')?.options || [];
+          if (!opts.includes(record.urgency)) errors.push(`紧急程度"${record.urgency}"不在允许列表中，可选：${opts.join('、')}`);
+        }
+        if (record.qty) {
+          const n = Number(record.qty);
+          if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) errors.push(`需求数量必须是正整数，当前值：${record.qty}`);
+        }
+      },
+      buildNewRecord: (item) => ({
+        id: uid(),
+        ...item.data,
+        status: item.data.status || appConfig.primaryStatus,
+        createdAt: new Date().toISOString(),
+        timeline: [{ status: item.data.status || appConfig.primaryStatus, at: today, by: '批量导入' }]
+      }),
+      auditMetadata: (record) => ({ ship: record.ship, partName: record.partName, system: record.system, qty: record.qty, importBatch: true }),
+      previewFields: (data) => [
+        { cls: 'import-preview-ship', val: data.ship },
+        { cls: 'import-preview-part', val: data.partName },
+        { cls: 'import-preview-system', val: data.system },
+        { cls: 'import-preview-location', val: data.location },
+        { cls: 'import-preview-qty', val: `x${data.qty}` },
+        { cls: 'import-preview-urgency urgency-' + (data.urgency === '高' ? 'high' : data.urgency === '中' ? 'medium' : 'low'), val: data.urgency },
+      ],
+      previewDetail: (data) => data.reason,
+    },
+    inventory: {
+      label: '库存台账',
+      config: inventoryConfig,
+      fieldAliasMap: {
+        'ship': ['所属船舶', '船舶', '船名', 'ship', 'vessel'],
+        'partName': ['备件名称', '备件', '配件名称', '配件', '零件名称', 'partname', 'part', 'name'],
+        'system': ['设备系统', '系统', '所属系统', 'system'],
+        'location': ['船舶位置', '位置', '存放位置', '库位', 'location', 'position'],
+        'currentStock': ['当前库存', '库存数量', '现有库存', 'currentstock', 'stock', 'current'],
+        'safetyStock': ['安全库存', '最低库存', '预警库存', 'safetystock', 'safety', 'min'],
+        'lastCheckDate': ['最后盘点日期', '盘点日期', '最近盘点', 'lastcheckdate', 'checkdate', 'lastcheck'],
+      },
+      requiredFields: ['ship', 'partName', 'system', 'location', 'currentStock', 'safetyStock'],
+      sampleFilename: '库存台账导入示例.csv',
+      auditEventType: AUDIT_EVENT_TYPES.INVENTORY_IMPORT,
+      targetType: 'inventory',
+      getExistingRecords: () => inventory,
+      persistFn: persistInventory,
+      duplicateCheck: (record, existing) => existing.some(r =>
+        r.ship === record.ship && r.partName === record.partName &&
+        r.system === record.system && r.location === record.location
+      ),
+      internalDuplicateCheck: (a, b) =>
+        a.ship === b.ship && a.partName === b.partName &&
+        a.system === b.system && a.location === b.location,
+      duplicateLabel: '同一船舶、同一备件、同一系统、同一位置',
+      existingDuplicateLabel: '与现有库存记录重复（同一船舶、同一备件、同一系统、同一位置）',
+      extraValidate: (record, errors) => {
+        if (record.ship && !appConfig.ships.includes(record.ship)) {
+          errors.push(`船舶"${record.ship}"不在允许列表中，可选：${appConfig.ships.join('、')}`);
+        }
+        if (record.system) {
+          const opts = inventoryConfig.fields.find(f => f.key === 'system')?.options || [];
+          if (!opts.includes(record.system)) errors.push(`设备系统"${record.system}"不在允许列表中，可选：${opts.join('、')}`);
+        }
+        if (record.currentStock) {
+          const n = Number(record.currentStock);
+          if (!Number.isFinite(n) || n < 0) errors.push(`当前库存必须为非负数字，当前值：${record.currentStock}`);
+        }
+        if (record.safetyStock) {
+          const n = Number(record.safetyStock);
+          if (!Number.isFinite(n) || n < 0) errors.push(`安全库存必须为非负数字，当前值：${record.safetyStock}`);
+        }
+      },
+      buildNewRecord: (item) => ({
+        id: uid(),
+        ...item.data,
+        createdAt: new Date().toISOString()
+      }),
+      auditMetadata: (record) => ({ ship: record.ship, partName: record.partName, system: record.system, currentStock: record.currentStock, safetyStock: record.safetyStock, importBatch: true }),
+      previewFields: (data) => [
+        { cls: 'import-preview-ship', val: data.ship },
+        { cls: 'import-preview-part', val: data.partName },
+        { cls: 'import-preview-system', val: data.system },
+        { cls: 'import-preview-location', val: data.location },
+        { cls: 'import-preview-qty', val: `库存:${data.currentStock || '-'}` },
+        { cls: 'import-preview-urgency urgency-low', val: `安全:${data.safetyStock || '-'}` },
+      ],
+      previewDetail: (data) => data.lastCheckDate ? `盘点日期：${data.lastCheckDate}` : '',
+    },
+    template: {
+      label: '常用模板',
+      config: templateConfig,
+      fieldAliasMap: {
+        'templateName': ['模板名称', '名称', '模板', 'templatename', 'template', 'tplname'],
+        'ship': ['默认船舶', '所属船舶', '船舶', '船名', 'ship', 'vessel'],
+        'partName': ['备件名称', '备件', '配件名称', '配件', '零件名称', 'partname', 'part', 'name'],
+        'system': ['设备系统', '系统', '所属系统', 'system'],
+        'location': ['默认位置', '船舶位置', '位置', '存放位置', '库位', 'location', 'position'],
+        'qty': ['默认数量', '需求数量', '数量', '申请数量', 'qty', 'quantity', 'count'],
+        'reason': ['常用申请原因', '申请原因', '原因', '备注', '说明', 'reason', 'remark', 'note'],
+      },
+      requiredFields: ['templateName', 'ship', 'partName', 'system', 'location'],
+      sampleFilename: '常用模板导入示例.csv',
+      auditEventType: AUDIT_EVENT_TYPES.TEMPLATE_IMPORT,
+      targetType: 'template',
+      getExistingRecords: () => templates,
+      persistFn: (next) => { setTemplates(next); localStorage.setItem(templateConfig.storage, JSON.stringify(next)); },
+      duplicateCheck: (record, existing) => existing.some(r => r.templateName === record.templateName),
+      internalDuplicateCheck: (a, b) => a.templateName === b.templateName,
+      duplicateLabel: '同一模板名称',
+      existingDuplicateLabel: '与现有模板记录重复（同一模板名称）',
+      extraValidate: (record, errors) => {
+        if (record.ship && !appConfig.ships.includes(record.ship)) {
+          errors.push(`船舶"${record.ship}"不在允许列表中，可选：${appConfig.ships.join('、')}`);
+        }
+        if (record.system) {
+          const opts = templateConfig.fields.find(f => f.key === 'system')?.options || [];
+          if (!opts.includes(record.system)) errors.push(`设备系统"${record.system}"不在允许列表中，可选：${opts.join('、')}`);
+        }
+        if (record.qty) {
+          const n = Number(record.qty);
+          if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) errors.push(`默认数量必须是正整数，当前值：${record.qty}`);
+        }
+      },
+      buildNewRecord: (item) => ({
+        id: uid(),
+        ...item.data,
+        useCount: 0,
+        lastUsedAt: null,
+        createdAt: new Date().toISOString()
+      }),
+      auditMetadata: (record) => ({ templateName: record.templateName, ship: record.ship, partName: record.partName, importBatch: true }),
+      previewFields: (data) => [
+        { cls: 'import-preview-ship', val: data.templateName },
+        { cls: 'import-preview-part', val: data.partName },
+        { cls: 'import-preview-system', val: data.system },
+        { cls: 'import-preview-location', val: data.location },
+        { cls: 'import-preview-qty', val: `x${data.qty || '-'}` },
+        { cls: 'import-preview-urgency urgency-medium', val: data.ship },
+      ],
+      previewDetail: (data) => data.reason || '',
+    },
+  };
+
+  function currentImportConfig() {
+    return importTypeConfigs[importType];
+  }
 
   const [approvalSubTab, setApprovalSubTab] = useState('urgent');
   const [approvalSearch, setApprovalSearch] = useState('');
@@ -1107,20 +1291,9 @@ function App() {
     setSelected(nextRecord);
   }
 
-  const fieldAliasMap = {
-    'ship': ['所属船舶', '船舶', '船名', 'ship', 'vessel'],
-    'partName': ['备件名称', '备件', '配件名称', '配件', '零件名称', 'partname', 'part', 'name'],
-    'system': ['设备系统', '系统', '所属系统', 'system'],
-    'location': ['船舶位置', '位置', '存放位置', '库位', 'location', 'position'],
-    'qty': ['需求数量', '数量', '申请数量', 'qty', 'quantity', 'count'],
-    'urgency': ['紧急程度', '紧急', '优先级', 'urgency', 'priority'],
-    'reason': ['申请原因', '原因', '备注', '说明', 'reason', 'remark', 'note'],
-    'status': ['状态', '申请状态', 'status']
-  };
-
-  function matchField(header) {
+  function matchField(header, aliasMap) {
     const lowerHeader = header.trim().toLowerCase();
-    for (const [fieldKey, aliases] of Object.entries(fieldAliasMap)) {
+    for (const [fieldKey, aliases] of Object.entries(aliasMap)) {
       for (const alias of aliases) {
         if (lowerHeader === alias.toLowerCase()) {
           return fieldKey;
@@ -1220,10 +1393,9 @@ function App() {
     return { headers, rows };
   }
 
-  function validateRow(row, fieldMapping, rowIndex, existingRecords, parsedRows) {
+  function validateRow(row, fieldMapping, rowIndex, existingRecords, parsedRows, typeConfig) {
     const errors = [];
     const record = {};
-    const requiredFields = ['ship', 'partName', 'system', 'location', 'qty', 'urgency', 'reason'];
 
     for (const [csvHeader, fieldKey] of Object.entries(fieldMapping)) {
       if (fieldKey && row[csvHeader] !== undefined) {
@@ -1231,65 +1403,29 @@ function App() {
       }
     }
 
-    for (const field of requiredFields) {
+    for (const field of typeConfig.requiredFields) {
       if (!record[field] || record[field].trim() === '') {
-        const fieldConfig = appConfig.fields.find(f => f.key === field);
+        const fieldConfig = typeConfig.config.fields.find(f => f.key === field);
         errors.push(`缺少必填字段：${fieldConfig?.label || field}`);
       }
     }
 
-    if (record.ship && !appConfig.ships.includes(record.ship)) {
-      errors.push(`船舶"${record.ship}"不在允许列表中，可选：${appConfig.ships.join('、')}`);
-    }
-
-    if (record.system) {
-      const systemOptions = appConfig.fields.find(f => f.key === 'system')?.options || [];
-      if (!systemOptions.includes(record.system)) {
-        errors.push(`设备系统"${record.system}"不在允许列表中，可选：${systemOptions.join('、')}`);
-      }
-    }
-
-    if (record.urgency) {
-      const urgencyOptions = appConfig.fields.find(f => f.key === 'urgency')?.options || [];
-      if (!urgencyOptions.includes(record.urgency)) {
-        errors.push(`紧急程度"${record.urgency}"不在允许列表中，可选：${urgencyOptions.join('、')}`);
-      }
-    }
-
-    if (record.qty) {
-      const qtyNum = Number(record.qty);
-      if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) {
-        errors.push(`需求数量必须是正整数，当前值：${record.qty}`);
-      }
-    }
+    typeConfig.extraValidate(record, errors);
 
     const duplicateInImport = parsedRows.findIndex((r, i) => {
       if (i >= rowIndex) return false;
-      return r.ship === record.ship &&
-             r.partName === record.partName &&
-             r.system === record.system &&
-             r.location === record.location;
+      return typeConfig.internalDuplicateCheck(r, record);
     });
     if (duplicateInImport !== -1) {
-      errors.push(`与导入文件中第${duplicateInImport + 2}行数据重复（同一船舶、同一备件、同一系统、同一位置）`);
+      errors.push(`与导入文件中第${duplicateInImport + 2}行数据重复（${typeConfig.duplicateLabel}）`);
     }
 
-    const duplicateInExisting = existingRecords.some(r =>
-      r.ship === record.ship &&
-      r.partName === record.partName &&
-      r.system === record.system &&
-      r.location === record.location &&
-      !wasDispatched(r)
-    );
+    const duplicateInExisting = typeConfig.duplicateCheck(record, existingRecords);
     if (duplicateInExisting) {
-      errors.push(`与现有申请记录重复（同一船舶、同一备件、同一系统、同一位置且未发放）`);
+      errors.push(typeConfig.existingDuplicateLabel);
     }
 
-    if (record.status && !appConfig.statuses.includes(record.status)) {
-      record.status = appConfig.primaryStatus;
-    }
-
-    return { record: { ...record, status: record.status || appConfig.primaryStatus }, errors };
+    return { record, errors };
   }
 
   function analyzeImport(text) {
@@ -1299,6 +1435,8 @@ function App() {
     }
 
     setImportPreviewTab('valid');
+
+    const typeConfig = currentImportConfig();
 
     try {
       const { headers, rows } = parseCSV(text);
@@ -1312,25 +1450,25 @@ function App() {
       const unrecognizedFields = [];
 
       headers.forEach(header => {
-        const matched = matchField(header);
+        const matched = matchField(header, typeConfig.fieldAliasMap);
         fieldMapping[header] = matched;
         if (matched) {
-          recognizedFields.push({ csv: header, field: matched, label: appConfig.fields.find(f => f.key === matched)?.label || matched });
+          recognizedFields.push({ csv: header, field: matched, label: typeConfig.config.fields.find(f => f.key === matched)?.label || matched });
         } else {
           unrecognizedFields.push(header);
         }
       });
 
-      const requiredFieldKeys = ['ship', 'partName', 'system', 'location', 'qty', 'urgency', 'reason'];
-      const missingRequired = requiredFieldKeys.filter(key => !recognizedFields.some(f => f.field === key));
+      const missingRequired = typeConfig.requiredFields.filter(key => !recognizedFields.some(f => f.field === key));
 
+      const existingRecords = typeConfig.getExistingRecords();
       const validRows = [];
       const errorRows = [];
       const duplicateRows = [];
 
       const parsedRows = [];
       rows.forEach((row, index) => {
-        const { record, errors } = validateRow(row, fieldMapping, index, records, parsedRows);
+        const { record, errors } = validateRow(row, fieldMapping, index, existingRecords, parsedRows, typeConfig);
         parsedRows.push(record);
 
         const hasDuplicateError = errors.some(e => e.includes('重复'));
@@ -1351,7 +1489,7 @@ function App() {
         fieldMapping,
         recognizedFields,
         unrecognizedFields,
-        missingRequired: missingRequired.map(key => appConfig.fields.find(f => f.key === key)?.label || key),
+        missingRequired: missingRequired.map(key => typeConfig.config.fields.find(f => f.key === key)?.label || key),
         totalRows: rows.length,
         validRows,
         errorRows,
@@ -1390,30 +1528,21 @@ function App() {
   function executeImport() {
     if (!importPreview || !importPreview.canImport) return;
 
-    const newRecords = importPreview.validRows.map(item => ({
-      id: uid(),
-      ...item.data,
-      status: item.data.status || appConfig.primaryStatus,
-      createdAt: new Date().toISOString(),
-      timeline: [{ status: item.data.status || appConfig.primaryStatus, at: today, by: '批量导入' }]
-    }));
+    const typeConfig = currentImportConfig();
 
-    const nextRecords = [...newRecords, ...records];
-    persist(nextRecords);
+    const newRecords = importPreview.validRows.map(item => typeConfig.buildNewRecord(item));
+
+    const existingRecords = typeConfig.getExistingRecords();
+    const nextRecords = [...newRecords, ...existingRecords];
+    typeConfig.persistFn(nextRecords);
 
     newRecords.forEach((record) => {
       logAuditEvent({
-        eventType: AUDIT_EVENT_TYPES.IMPORT,
-        targetType: 'record',
+        eventType: typeConfig.auditEventType,
+        targetType: typeConfig.targetType,
         targetId: record.id,
         afterData: record,
-        metadata: {
-          ship: record.ship,
-          partName: record.partName,
-          system: record.system,
-          qty: record.qty,
-          importBatch: true,
-        },
+        metadata: typeConfig.auditMetadata(record),
         operator: operatorName,
       });
     });
@@ -1427,7 +1556,10 @@ function App() {
     setShowImportModal(false);
     setImportText('');
     setImportPreview(null);
-    setActiveTab('application');
+
+    if (importType === 'application') setActiveTab('application');
+    else if (importType === 'inventory') setActiveTab('inventory');
+    else if (importType === 'template') setActiveTab('templates');
   }
 
   function escapeCSVField(field, delimiter = ',') {
@@ -1438,10 +1570,11 @@ function App() {
     return str;
   }
 
-  function getSampleCSV() {
+  function getSampleCSV(typeKey) {
+    const cfg = importTypeConfigs[typeKey || importType];
     const delimiter = ',';
-    const headers = appConfig.fields.map(f => escapeCSVField(f.label, delimiter)).join(delimiter);
-    const sampleRow = appConfig.fields.map(f => {
+    const headers = cfg.config.fields.map(f => escapeCSVField(f.label, delimiter)).join(delimiter);
+    const sampleRow = cfg.config.fields.map(f => {
       const value = f.type === 'select' ? (f.options[0] || '') : (f.placeholder || '');
       return escapeCSVField(value, delimiter);
     }).join(delimiter);
@@ -1455,12 +1588,13 @@ function App() {
   }
 
   function downloadSampleCSV() {
+    const typeConfig = currentImportConfig();
     const csv = getSampleCSV();
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = '备件申请导入示例.csv';
+    link.download = typeConfig.sampleFilename;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -3332,7 +3466,7 @@ function App() {
                 className="primary"
                 type="button"
                 style={{ background: '#0d9488', marginTop: '10px' }}
-                onClick={() => { setShowImportModal(true); setImportText(''); setImportPreview(null); setImportTab('paste'); setImportPreviewTab('valid'); }}
+                onClick={() => { setImportType('application'); setShowImportModal(true); setImportText(''); setImportPreview(null); setImportTab('paste'); setImportPreviewTab('valid'); }}
               >
                 <Upload size={18} />导入CSV
               </button>
@@ -4267,6 +4401,14 @@ function App() {
                 ))}
               </div>
               <button className="primary" type="submit"><Plus size={18} />新增</button>
+              <button
+                className="primary"
+                type="button"
+                style={{ background: inventoryConfig.accent, marginTop: '10px' }}
+                onClick={() => { setImportType('inventory'); setShowImportModal(true); setImportText(''); setImportPreview(null); setImportTab('paste'); setImportPreviewTab('valid'); }}
+              >
+                <Upload size={18} />导入CSV
+              </button>
               <p className="hint">库存低于安全库存时将自动标记为预警状态。</p>
             </form>
 
@@ -4724,6 +4866,14 @@ function App() {
                 ))}
               </div>
               <button className="primary" type="submit"><Plus size={18} />保存模板</button>
+              <button
+                className="primary"
+                type="button"
+                style={{ background: templateConfig.accent, marginTop: '10px' }}
+                onClick={() => { setImportType('template'); setShowImportModal(true); setImportText(''); setImportPreview(null); setImportTab('paste'); setImportPreviewTab('valid'); }}
+              >
+                <Upload size={18} />导入CSV
+              </button>
               <p className="hint">保存常用备件模板后，在新增申请时可以一键套用模板字段。</p>
             </form>
 
@@ -6110,7 +6260,7 @@ function App() {
             <div className="import-modal-header">
               <div className="import-modal-title">
                 <FileSpreadsheet size={22} />
-                <h2>导入备件申请</h2>
+                <h2>批量导入</h2>
               </div>
               <button
                 className="import-modal-close"
@@ -6119,6 +6269,19 @@ function App() {
               >
                 <X size={20} />
               </button>
+            </div>
+
+            <div className="import-type-tabs">
+              {Object.entries(importTypeConfigs).map(([key, cfg]) => (
+                <button
+                  key={key}
+                  className={'import-type-tab ' + (importType === key ? 'import-type-tab-active' : '')}
+                  type="button"
+                  onClick={() => { setImportType(key); setImportText(''); setImportPreview(null); setImportPreviewTab('valid'); }}
+                >
+                  {cfg.label}
+                </button>
+              ))}
             </div>
 
             <div className="import-tabs">
@@ -6144,12 +6307,17 @@ function App() {
               {importTab === 'paste' && (
                 <div className="import-paste-area">
                   <label className="import-label">
-                    <span>粘贴CSV格式数据</span>
+                    <span>粘贴CSV格式数据（当前类型：{currentImportConfig().label}）</span>
                     <textarea
                       className="import-textarea"
                       value={importText}
                       onChange={handlePaste}
-                      placeholder="所属船舶,备件名称,设备系统,船舶位置,需求数量,紧急程度,申请原因&#10;远洋一号,海水泵密封圈,机舱,二副库,2,高,&quot;巡检发现渗漏,需预防性更换,立即处理&quot;&#10;海运之星,甲板照明灯泡,电气,甲板库,12,中,夜航照明备货"
+                      placeholder={importType === 'application'
+                        ? "所属船舶,备件名称,设备系统,船舶位置,需求数量,紧急程度,申请原因&#10;远洋一号,海水泵密封圈,机舱,二副库,2,高,&quot;巡检发现渗漏,需预防性更换,立即处理&quot;&#10;海运之星,甲板照明灯泡,电气,甲板库,12,中,夜航照明备货"
+                        : importType === 'inventory'
+                        ? "所属船舶,备件名称,设备系统,船舶位置,当前库存,安全库存,最后盘点日期&#10;远洋一号,海水泵密封圈,机舱,二副库,3,5,2026-06-01&#10;海运之星,甲板照明灯泡,电气,甲板库,20,10,2026-06-05"
+                        : "模板名称,默认船舶,备件名称,设备系统,默认位置,默认数量,常用申请原因&#10;海水泵日常维护,远洋一号,海水泵密封圈,机舱,二副库,2,巡检发现渗漏&#10;甲板照明维护,海运之星,甲板照明灯泡,电气,甲板库,12,夜航照明备货"
+                      }
                       rows={8}
                     />
                   </label>
@@ -6178,7 +6346,7 @@ function App() {
                     onClick={() => fileInputRef.current?.click()}
                   >
                     <Upload size={48} style={{ color: '#0891b2', marginBottom: '12px' }} />
-                    <p style={{ fontWeight: 700, color: '#101828', marginBottom: '4px' }}>点击选择CSV文件</p>
+                    <p style={{ fontWeight: 700, color: '#101828', marginBottom: '4px' }}>点击选择CSV文件（当前类型：{currentImportConfig().label}）</p>
                     <p style={{ color: '#667085', fontSize: '13px' }}>支持 .csv、.txt 格式文件</p>
                   </div>
                   {importText && (
@@ -6293,16 +6461,13 @@ function App() {
                               )}
                             </div>
                             <div className="import-preview-row-data">
-                              <span className="import-preview-ship">{item.data.ship}</span>
-                              <span className="import-preview-part">{item.data.partName}</span>
-                              <span className="import-preview-system">{item.data.system}</span>
-                              <span className="import-preview-location">{item.data.location}</span>
-                              <span className="import-preview-qty">x{item.data.qty}</span>
-                              <span className={'import-preview-urgency urgency-' + (item.data.urgency === '高' ? 'high' : item.data.urgency === '中' ? 'medium' : 'low')}>
-                                {item.data.urgency}
-                              </span>
+                              {currentImportConfig().previewFields(item.data).map((pf, pi) => (
+                                <span key={pi} className={pf.cls}>{pf.val}</span>
+                              ))}
                             </div>
-                            <div className="import-preview-row-reason">{item.data.reason}</div>
+                            {currentImportConfig().previewDetail(item.data) && (
+                              <div className="import-preview-row-reason">{currentImportConfig().previewDetail(item.data)}</div>
+                            )}
                             {item.warnings.length > 0 && (
                               <div className="import-row-warnings">
                                 {item.warnings.map((w, wi) => (
@@ -6334,14 +6499,10 @@ function App() {
                               </span>
                             </div>
                             <div className="import-preview-row-data">
-                              <span className="import-preview-ship">{item.data.ship || '-'}</span>
-                              <span className="import-preview-part">{item.data.partName || '-'}</span>
-                              <span className="import-preview-system">{item.data.system || '-'}</span>
-                              <span className="import-preview-location">{item.data.location || '-'}</span>
-                              <span className="import-preview-qty">x{item.data.qty || '-'}</span>
-                              <span className="import-preview-urgency">{item.data.urgency || '-'}</span>
+                              {currentImportConfig().previewFields(item.data).map((pf, pi) => (
+                                <span key={pi} className={pf.cls}>{pf.val || '-'}</span>
+                              ))}
                             </div>
-                            <div className="import-preview-row-reason">{item.data.reason || '-'}</div>
                             <div className="import-row-errors">
                               {item.errors.map((e, ei) => (
                                 <div key={ei} className="import-row-error-item">
@@ -6371,16 +6532,13 @@ function App() {
                               </span>
                             </div>
                             <div className="import-preview-row-data">
-                              <span className="import-preview-ship">{item.data.ship}</span>
-                              <span className="import-preview-part">{item.data.partName}</span>
-                              <span className="import-preview-system">{item.data.system}</span>
-                              <span className="import-preview-location">{item.data.location}</span>
-                              <span className="import-preview-qty">x{item.data.qty}</span>
-                              <span className={'import-preview-urgency urgency-' + (item.data.urgency === '高' ? 'high' : item.data.urgency === '中' ? 'medium' : 'low')}>
-                                {item.data.urgency}
-                              </span>
+                              {currentImportConfig().previewFields(item.data).map((pf, pi) => (
+                                <span key={pi} className={pf.cls}>{pf.val}</span>
+                              ))}
                             </div>
-                            <div className="import-preview-row-reason">{item.data.reason}</div>
+                            {currentImportConfig().previewDetail(item.data) && (
+                              <div className="import-preview-row-reason">{currentImportConfig().previewDetail(item.data)}</div>
+                            )}
                             <div className="import-row-warnings">
                               {item.errors.map((w, wi) => (
                                 <div key={wi} className="import-row-warning-item">
@@ -6417,7 +6575,7 @@ function App() {
                 disabled={!importPreview?.canImport}
               >
                 <CheckCircle size={16} />
-                确认导入 ({importPreview?.validRows.length || 0} 条)
+                确认导入{currentImportConfig().label} ({importPreview?.validRows.length || 0} 条)
               </button>
             </div>
           </div>

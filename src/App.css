@@ -1727,6 +1727,43 @@ textarea { min-height: 76px; resize: vertical; }
   color: #344054;
 }
 
+.import-type-tabs {
+  display: flex;
+  gap: 0;
+  padding: 12px 24px 0;
+  background: #f9fafb;
+  border-bottom: 2px solid #e4e7ec;
+}
+
+.import-type-tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 10px 16px;
+  color: #667085;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.16s;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+}
+
+.import-type-tab:hover {
+  color: #0891b2;
+  background: #f0fdfa;
+}
+
+.import-type-tab-active {
+  color: #0891b2;
+  border-bottom-color: #0891b2;
+  background: #ecfeff;
+}
+
 .import-tabs {
   display: flex;
   gap: 4px;

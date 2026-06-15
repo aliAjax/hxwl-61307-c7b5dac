@@ -23,6 +23,8 @@ export const AUDIT_EVENT_TYPES = {
   INVENTORY_DEDUCT: 'inventory_deduct',
   INVENTORY_RESTORE: 'inventory_restore',
   INVENTORY_ADD: 'inventory_add',
+  INVENTORY_IMPORT: 'inventory_import',
+  TEMPLATE_IMPORT: 'template_import',
 };
 
 export const AUDIT_EVENT_LABELS = {
@@ -41,6 +43,8 @@ export const AUDIT_EVENT_LABELS = {
   inventory_deduct: '库存扣减',
   inventory_restore: '库存恢复',
   inventory_add: '采购入库',
+  inventory_import: '批量导入库存',
+  template_import: '批量导入模板',
 };
 
 export const STORAGE_KEYS = {
