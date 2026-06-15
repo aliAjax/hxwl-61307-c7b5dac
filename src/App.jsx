@@ -3465,6 +3465,7 @@ function App() {
 
         const riskLevel = app.urgency === '高' ? '紧急' : app.urgency === '中' ? '高' : '中';
         const displayQty = canDispatch ? requiredQty : gapQty;
+        const quantityLabel = canDispatch ? '待发放数量' : '缺口数量';
         let basis = `申请${app.qty}件，已批准${app.approvedQty || app.qty}件`;
         if (inv) {
           basis += `，当前库存${currentStock}件`;
@@ -3493,6 +3494,7 @@ function App() {
           partName: app.partName,
           location: app.location,
           gapQty: displayQty,
+          quantityLabel,
           riskDate,
           riskLevel,
           urgency: app.urgency,
@@ -3552,7 +3554,6 @@ function App() {
       const currentStock = inv ? Number(inv.currentStock) || 0 : 0;
       const gapQty = Math.max(requiredQty - currentStock, 0);
 
-      const leadDays = guaranteeConfig.leadTimeDays['紧急'] || 3;
       const riskDate = addDays(today, 1);
 
       let basis = `高紧急待审，需求${app.qty}件`;
@@ -6330,7 +6331,7 @@ function App() {
 
                         <div className="guarantee-risk-info-grid">
                           <div className="guarantee-risk-info-item">
-                            <span className="guarantee-risk-info-label">缺口数量</span>
+                            <span className="guarantee-risk-info-label">{risk.quantityLabel || '缺口数量'}</span>
                             <strong className="guarantee-risk-gap">{risk.gapQty}件</strong>
                           </div>
                           <div className="guarantee-risk-info-item">
@@ -6398,7 +6399,7 @@ function App() {
                       <strong>{selectedGuaranteeRisk.source}</strong>
                     </div>
                     <div className="stock-item">
-                      <span>缺口数量</span>
+                      <span>{selectedGuaranteeRisk.quantityLabel || '缺口数量'}</span>
                       <strong className="guarantee-risk-gap">{selectedGuaranteeRisk.gapQty}件</strong>
                     </div>
                     <div className="stock-item">
