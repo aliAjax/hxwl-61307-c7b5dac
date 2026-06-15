@@ -1,5 +1,5 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, PackagePlus, MinusCircle, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download, Wifi, WifiOff, Database, Cloud, CloudOff, AlertOctagon, ChevronDown, ChevronRight, Server, UserX, Layers, Activity, Save, RotateCcw, Hand } from 'lucide-react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, PackagePlus, MinusCircle, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download, Wifi, WifiOff, Database, Cloud, CloudOff, AlertOctagon, ChevronDown, ChevronRight, Server, UserX, Layers, Activity, Save, RotateCcw, Hand, Wrench } from 'lucide-react';
 import './App.css';
 import {
   OP_TYPES,
@@ -48,6 +48,11 @@ import {
   setOperator,
   searchAuditEventsByObject,
   getObjectTimeline,
+  loadRelationIndex,
+  buildRelationIndex,
+  saveRelationIndex,
+  queryRelations,
+  RELATION_TYPES,
 } from './auditMigrationEngine';
 
 const appConfig = {
@@ -856,6 +861,8 @@ function App() {
   const [migrationStatus, setMigrationStatus] = useState(null);
   const [showMigrationAlert, setShowMigrationAlert] = useState(false);
   const [dataVersion, setDataVersion] = useState(() => getDataVersion());
+  const [relationIndex, setRelationIndex] = useState(() => loadRelationIndex());
+  const [expandedMigrationRepairs, setExpandedMigrationRepairs] = useState({});
   const [auditTab, setAuditTab] = useState('overview');
   const [auditFilters, setAuditFilters] = useState({
     eventType: '全部',
@@ -946,6 +953,16 @@ function App() {
         setInventory(loadInventory());
         setTemplates(loadTemplates());
         setPurchases(loadPurchases());
+        const rawDist = localStorage.getItem(distConfig.storage);
+        if (rawDist) {
+          try {
+            setDistRecords(JSON.parse(rawDist).map(item => ({
+              ...item,
+              ship: item.ship || appConfig.ships[0]
+            })));
+          } catch {}
+        }
+        setRelationIndex(loadRelationIndex());
         const freshBaseline = takeBaseline(loadRecords());
         setBaseline(freshBaseline);
       }
@@ -7052,12 +7069,183 @@ function App() {
                             setInventory(loadInventory());
                             setTemplates(loadTemplates());
                             setPurchases(loadPurchases());
+                            const rawDist = localStorage.getItem(distConfig.storage);
+                            if (rawDist) {
+                              try {
+                                setDistRecords(JSON.parse(rawDist).map(item => ({
+                                  ...item,
+                                  ship: item.ship || appConfig.ships[0]
+                                })));
+                              } catch {}
+                            }
+                            setRelationIndex(loadRelationIndex());
                           }
                         }}
                       >
                         <RefreshCw size={14} /> 立即执行数据迁移
                       </button>
                     )}
+                    {migrationStatus?.repairDetails && Object.keys(migrationStatus.repairDetails).length > 0 && (
+                      <div className="migration-repairs-summary">
+                        <div className="migration-section-head" style={{ marginBottom: '8px' }}>
+                          <h4 style={{ margin: 0 }}><Wrench size={14} /> 本次迁移修复详情</h4>
+                        </div>
+                        {Object.entries(migrationStatus.repairDetails).map(([step, details]) => (
+                          <div key={step} className="migration-repair-step">
+                            <div
+                              className="migration-repair-step-header"
+                              onClick={() => setExpandedMigrationRepairs(prev => ({ ...prev, [step]: !prev[step] }))}
+                            >
+                              <span>{expandedMigrationRepairs[step] ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+                              <strong>{step.replace(/_/g, ' ')}</strong>
+                              <span className="migration-repair-count">
+                                共修复 {Object.values(details).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : (arr && typeof arr === 'object' && arr.count !== undefined ? arr.count : 0)), 0)} 处
+                              </span>
+                            </div>
+                            {expandedMigrationRepairs[step] && (
+                              <div className="migration-repair-details">
+                                {details.records?.fixedShip?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">申请记录 - 补齐船舶字段</span>
+                                    <span className="repair-count">{details.records.fixedShip.length} 条</span>
+                                    <div className="repair-items">
+                                      {details.records.fixedShip.map((item, i) => (
+                                        <span key={i} className="repair-item">{item.partName || item.id?.slice(0, 8)}</span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {details.records?.fixedTimeline?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">申请记录 - 补齐时间线</span>
+                                    <span className="repair-count">{details.records.fixedTimeline.length} 条</span>
+                                    <div className="repair-items">
+                                      {details.records.fixedTimeline.map((item, i) => (
+                                        <span key={i} className="repair-item">{item.partName || item.id?.slice(0, 8)}</span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {details.records?.fixedPurchaseStatus?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">申请记录 - 补齐采购状态</span>
+                                    <span className="repair-count">{details.records.fixedPurchaseStatus.length} 条</span>
+                                    <div className="repair-items">
+                                      {details.records.fixedPurchaseStatus.map((item, i) => (
+                                        <span key={i} className="repair-item">{item.partName || item.id?.slice(0, 8)} → {item.newValue}</span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {details.records?.fixedDistribution?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">申请记录 - 补齐发放标记</span>
+                                    <span className="repair-count">{details.records.fixedDistribution.length} 条</span>
+                                    <div className="repair-items">
+                                      {details.records.fixedDistribution.map((item, i) => (
+                                        <span key={i} className="repair-item">{item.partName || item.id?.slice(0, 8)}</span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {details.records?.fixedFromTemplateId?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">申请记录 - 补齐模板关联字段</span>
+                                    <span className="repair-count">{details.records.fixedFromTemplateId.length} 条</span>
+                                  </div>
+                                )}
+                                {details.inventory?.fixedShip?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">库存记录 - 补齐船舶字段</span>
+                                    <span className="repair-count">{details.inventory.fixedShip.length} 条</span>
+                                  </div>
+                                )}
+                                {details.templates?.fixedShip?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">模板记录 - 补齐船舶字段</span>
+                                    <span className="repair-count">{details.templates.fixedShip.length} 条</span>
+                                  </div>
+                                )}
+                                {details.purchases?.fixedTimeline?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">采购记录 - 补齐时间线</span>
+                                    <span className="repair-count">{details.purchases.fixedTimeline.length} 条</span>
+                                  </div>
+                                )}
+                                {details.purchases?.fixedStatus?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">采购记录 - 补齐状态字段</span>
+                                    <span className="repair-count">{details.purchases.fixedStatus.length} 条</span>
+                                  </div>
+                                )}
+                                {details.distributions?.fixedShip?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">发放记录 - 补齐船舶字段</span>
+                                    <span className="repair-count">{details.distributions.fixedShip.length} 条</span>
+                                  </div>
+                                )}
+                                {details.distributions?.fixedApplicationLink?.length > 0 && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">发放记录 - 关联申请记录</span>
+                                    <span className="repair-count">{details.distributions.fixedApplicationLink.length} 条</span>
+                                  </div>
+                                )}
+                                {details.relationIndex?.built && (
+                                  <div className="repair-group">
+                                    <span className="repair-label">业务关系索引</span>
+                                    <span className="repair-count">已构建，共 {details.relationIndex.count} 个对象</span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="migration-section">
+                    <div className="migration-section-head">
+                      <h3>业务对象关系索引</h3>
+                      <button
+                        type="button"
+                        className="migration-backup-btn"
+                        onClick={() => {
+                          const idx = buildRelationIndex({ records, purchases: purchases, distributions: distRecords, inventory, templates });
+                          saveRelationIndex(idx);
+                          setRelationIndex(idx);
+                          alert('关系索引已重新构建！');
+                        }}
+                      >
+                        <RefreshCw size={14} /> 重建索引
+                      </button>
+                    </div>
+                    <div className="migration-status-grid">
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">索引版本</span>
+                        <strong className="migration-status-value">v{relationIndex.version || 0}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">索引对象数</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.byId || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">申请→采购关联</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.applicationPurchases || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">申请→发放关联</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.applicationDistributions || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">申请→库存关联</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.applicationInventory || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">模板→申请关联</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.templateApplications || {}).length}</strong>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="migration-section">
@@ -7099,6 +7287,16 @@ function App() {
                                   setInventory(loadInventory());
                                   setTemplates(loadTemplates());
                                   setPurchases(loadPurchases());
+                                  const rawDist = localStorage.getItem(distConfig.storage);
+                                  if (rawDist) {
+                                    try {
+                                      setDistRecords(JSON.parse(rawDist).map(item => ({
+                                        ...item,
+                                        ship: item.ship || appConfig.ships[0]
+                                      })));
+                                    } catch {}
+                                  }
+                                  setRelationIndex(loadRelationIndex());
                                   setDataVersion(getDataVersion());
                                 } else {
                                   alert('恢复失败：' + result.error);
@@ -7121,8 +7319,12 @@ function App() {
                       {getMigrationLog().length === 0 && <p className="empty">暂无迁移日志</p>}
                       {getMigrationLog().slice(-20).reverse().map((log) => (
                         <div key={log.id} className={'migration-log-item ' + (log.success ? '' : 'migration-log-error')}>
-                          <div className="migration-log-header">
-                            {log.type === 'migration' ? (
+                          <div
+                            className="migration-log-header"
+                            onClick={() => setExpandedMigrationRepairs(prev => ({ ...prev, ['log_' + log.id]: !prev['log_' + log.id] }))}
+                            style={{ cursor: log.repairDetails || log.totalFixed ? 'pointer' : 'default' }}
+                          >
+                            {log.type === 'migration' || log.type === 'migration_details' ? (
                               log.success ? <CheckCircle size={16} /> : <XCircle size={16} />
                             ) : log.type === 'backup' ? (
                               <Save size={16} />
@@ -7132,11 +7334,17 @@ function App() {
                               <Activity size={16} />
                             )}
                             <span className="migration-log-type">
-                              {log.type === 'migration' ? '数据迁移' :
+                              {log.type === 'migration' || log.type === 'migration_details' ? '数据迁移' :
                                log.type === 'backup' ? '创建备份' :
                                log.type === 'restore' ? '恢复备份' : log.type}
                             </span>
                             <span className="migration-log-time">{new Date(log.timestamp).toLocaleString('zh-CN')}</span>
+                            {log.totalFixed !== undefined && (
+                              <span className="migration-repair-count-small">修复 {log.totalFixed} 处</span>
+                            )}
+                            {(log.repairDetails || log.totalFixed) && (
+                              expandedMigrationRepairs['log_' + log.id] ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+                            )}
                           </div>
                           <div className="migration-log-body">
                             {log.fromVersion !== undefined && (
@@ -7147,7 +7355,35 @@ function App() {
                               <span>回滚: {log.rollbackSuccess ? '成功' : '失败'}</span>
                             )}
                             {log.backupKey && <span>备份: {log.backupKey.replace('hxwl-61307-backup-', '')}</span>}
+                            {log.totalFixed !== undefined && (
+                              <span className="migration-log-repair-summary">共修复 {log.totalFixed} 处数据问题</span>
+                            )}
                           </div>
+                          {log.repairDetails && expandedMigrationRepairs['log_' + log.id] && (
+                            <div className="migration-log-repairs-detail">
+                              {log.repairDetails.records?.fixedShip?.length > 0 && (
+                                <div className="repair-inline">申请补齐船舶: {log.repairDetails.records.fixedShip.length}条</div>
+                              )}
+                              {log.repairDetails.records?.fixedTimeline?.length > 0 && (
+                                <div className="repair-inline">申请补齐时间线: {log.repairDetails.records.fixedTimeline.length}条</div>
+                              )}
+                              {log.repairDetails.records?.fixedPurchaseStatus?.length > 0 && (
+                                <div className="repair-inline">申请补齐采购状态: {log.repairDetails.records.fixedPurchaseStatus.length}条</div>
+                              )}
+                              {log.repairDetails.records?.fixedDistribution?.length > 0 && (
+                                <div className="repair-inline">申请补齐发放标记: {log.repairDetails.records.fixedDistribution.length}条</div>
+                              )}
+                              {log.repairDetails.purchases?.fixedTimeline?.length > 0 && (
+                                <div className="repair-inline">采购补齐时间线: {log.repairDetails.purchases.fixedTimeline.length}条</div>
+                              )}
+                              {log.repairDetails.distributions?.fixedApplicationLink?.length > 0 && (
+                                <div className="repair-inline">发放关联申请: {log.repairDetails.distributions.fixedApplicationLink.length}条</div>
+                              )}
+                              {log.repairDetails.relationIndex?.built && (
+                                <div className="repair-inline">构建关系索引: {log.repairDetails.relationIndex.count}个对象</div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

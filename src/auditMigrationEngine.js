@@ -2,10 +2,13 @@ const DATA_VERSION_KEY = 'hxwl-61307-data-version';
 const DATA_BACKUP_PREFIX = 'hxwl-61307-backup-';
 const AUDIT_LOG_KEY = 'hxwl-61307-audit-log';
 const MIGRATION_LOG_KEY = 'hxwl-61307-migration-log';
+const RELATION_INDEX_KEY = 'hxwl-61307-relation-index';
+const SYNC_QUEUE_STORAGE = 'hxwl-61307-sync-queue';
+const SYNC_CONFLICTS_STORAGE = 'hxwl-61307-sync-conflicts';
 const TOMBSTONE = '__TOMBSTONE__';
 
 
-export const CURRENT_DATA_VERSION = 2;
+export const CURRENT_DATA_VERSION = 3;
 
 export const AUDIT_EVENT_TYPES = {
   CREATE: 'create',
@@ -55,6 +58,20 @@ export const STORAGE_KEYS = {
   DISTRIBUTION: 'hxwl-61307-distribution',
   TEMPLATES: 'hxwl-61307-spare-templates',
   PURCHASES: 'hxwl-61307-purchase-orders',
+  AUDIT_LOG: AUDIT_LOG_KEY,
+  RELATION_INDEX: RELATION_INDEX_KEY,
+  SYNC_QUEUE: SYNC_QUEUE_STORAGE,
+  SYNC_CONFLICTS: SYNC_CONFLICTS_STORAGE,
+};
+
+export const RELATION_TYPES = {
+  APPLICATION_TO_PURCHASE: 'application_purchase',
+  APPLICATION_TO_DISTRIBUTION: 'application_distribution',
+  APPLICATION_TO_INVENTORY: 'application_inventory',
+  APPLICATION_TO_TEMPLATE: 'application_template',
+  TEMPLATE_TO_APPLICATION: 'template_application',
+  PURCHASE_TO_INVENTORY: 'purchase_inventory',
+  INVENTORY_TO_APPLICATION: 'inventory_application',
 };
 
 function uid() {
@@ -122,6 +139,155 @@ function appendMigrationLog(entry) {
     ...entry,
   });
   localStorage.setItem(MIGRATION_LOG_KEY, JSON.stringify(log.slice(-100)));
+}
+
+export function loadRelationIndex() {
+  return safeParse(localStorage.getItem(RELATION_INDEX_KEY), {
+    version: 3,
+    byId: {},
+    applicationPurchases: {},
+    applicationDistributions: {},
+    applicationInventory: {},
+    applicationTemplates: {},
+    templateApplications: {},
+    purchaseApplications: {},
+    purchaseInventory: {},
+    inventoryApplications: {},
+    distributionApplications: {},
+  });
+}
+
+export function saveRelationIndex(index) {
+  localStorage.setItem(RELATION_INDEX_KEY, JSON.stringify({ ...index, version: 3 }));
+}
+
+export function buildRelationIndex({ records, purchases, distributions, inventory, templates }) {
+  const index = {
+    version: 3,
+    byId: {},
+    applicationPurchases: {},
+    applicationDistributions: {},
+    applicationInventory: {},
+    applicationTemplates: {},
+    templateApplications: {},
+    purchaseApplications: {},
+    purchaseInventory: {},
+    inventoryApplications: {},
+    distributionApplications: {},
+  };
+
+  records.forEach((rec) => {
+    if (rec?.id) {
+      index.byId[rec.id] = { type: 'application', data: { ship: rec.ship, partName: rec.partName, status: rec.status } };
+      if (rec.fromTemplateId) {
+        if (!index.applicationTemplates[rec.id]) index.applicationTemplates[rec.id] = [];
+        if (!index.applicationTemplates[rec.id].includes(rec.fromTemplateId)) {
+          index.applicationTemplates[rec.id].push(rec.fromTemplateId);
+        }
+        if (!index.templateApplications[rec.fromTemplateId]) index.templateApplications[rec.fromTemplateId] = [];
+        if (!index.templateApplications[rec.fromTemplateId].includes(rec.id)) {
+          index.templateApplications[rec.fromTemplateId].push(rec.id);
+        }
+      }
+    }
+  });
+
+  purchases.forEach((pur) => {
+    if (pur?.id) {
+      index.byId[pur.id] = { type: 'purchase', data: { ship: pur.ship, partName: pur.partName, status: pur.status } };
+      if (pur.applicationId) {
+        if (!index.applicationPurchases[pur.applicationId]) index.applicationPurchases[pur.applicationId] = [];
+        if (!index.applicationPurchases[pur.applicationId].includes(pur.id)) {
+          index.applicationPurchases[pur.applicationId].push(pur.id);
+        }
+        if (!index.purchaseApplications[pur.id]) index.purchaseApplications[pur.id] = [];
+        if (!index.purchaseApplications[pur.id].includes(pur.applicationId)) {
+          index.purchaseApplications[pur.id].push(pur.applicationId);
+        }
+      }
+      if (pur.inventoryId) {
+        if (!index.purchaseInventory[pur.id]) index.purchaseInventory[pur.id] = [];
+        if (!index.purchaseInventory[pur.id].includes(pur.inventoryId)) {
+          index.purchaseInventory[pur.id].push(pur.inventoryId);
+        }
+      }
+    }
+  });
+
+  distributions.forEach((dist) => {
+    if (dist?.id) {
+      index.byId[dist.id] = { type: 'distribution', data: { ship: dist.ship, partName: dist.partName, distQty: dist.distQty } };
+      if (dist.applicationId) {
+        if (!index.applicationDistributions[dist.applicationId]) index.applicationDistributions[dist.applicationId] = [];
+        if (!index.applicationDistributions[dist.applicationId].includes(dist.id)) {
+          index.applicationDistributions[dist.applicationId].push(dist.id);
+        }
+        if (!index.distributionApplications[dist.id]) index.distributionApplications[dist.id] = [];
+        if (!index.distributionApplications[dist.id].includes(dist.applicationId)) {
+          index.distributionApplications[dist.id].push(dist.applicationId);
+        }
+      }
+    }
+  });
+
+  inventory.forEach((inv) => {
+    if (inv?.id) {
+      index.byId[inv.id] = { type: 'inventory', data: { ship: inv.ship, partName: inv.partName, currentStock: inv.currentStock } };
+    }
+  });
+
+  templates.forEach((tpl) => {
+    if (tpl?.id) {
+      index.byId[tpl.id] = { type: 'template', data: { templateName: tpl.templateName, ship: tpl.ship, partName: tpl.partName } };
+    }
+  });
+
+  records.forEach((rec) => {
+    if (!rec?.id) return;
+    inventory.forEach((inv) => {
+      if (!inv?.id) return;
+      if (inv.ship === rec.ship && inv.partName === rec.partName && inv.system === rec.system && inv.location === rec.location) {
+        if (!index.applicationInventory[rec.id]) index.applicationInventory[rec.id] = [];
+        if (!index.applicationInventory[rec.id].includes(inv.id)) {
+          index.applicationInventory[rec.id].push(inv.id);
+        }
+        if (!index.inventoryApplications[inv.id]) index.inventoryApplications[inv.id] = [];
+        if (!index.inventoryApplications[inv.id].includes(rec.id)) {
+          index.inventoryApplications[inv.id].push(rec.id);
+        }
+      }
+    });
+  });
+
+  return index;
+}
+
+export function queryRelations(objectType, objectId) {
+  const index = loadRelationIndex();
+  const result = { purchases: [], distributions: [], inventory: [], templates: [], applications: [] };
+  switch (objectType) {
+    case 'record':
+    case 'application':
+      result.purchases = index.applicationPurchases[objectId] || [];
+      result.distributions = index.applicationDistributions[objectId] || [];
+      result.inventory = index.applicationInventory[objectId] || [];
+      result.templates = index.applicationTemplates[objectId] || [];
+      break;
+    case 'purchase':
+      result.applications = index.purchaseApplications[objectId] || [];
+      result.inventory = index.purchaseInventory[objectId] || [];
+      break;
+    case 'distribution':
+      result.applications = index.distributionApplications[objectId] || [];
+      break;
+    case 'inventory':
+      result.applications = index.inventoryApplications[objectId] || [];
+      break;
+    case 'template':
+      result.applications = index.templateApplications[objectId] || [];
+      break;
+  }
+  return result;
 }
 
 function backupAllData() {
@@ -331,9 +497,222 @@ function migrateFromV1ToV2() {
   }
 }
 
+function migrateFromV2ToV3() {
+  const today = new Date().toISOString().slice(0, 10);
+  const repairDetails = {
+    records: { fixedShip: [], fixedTimeline: [], fixedPurchaseStatus: [], fixedDistribution: [], fixedFromTemplateId: [] },
+    inventory: { fixedShip: [] },
+    templates: { fixedShip: [] },
+    purchases: { fixedTimeline: [], fixedStatus: [] },
+    distributions: { fixedShip: [], fixedApplicationLink: [] },
+    relationIndex: { built: false, count: 0 },
+  };
+
+  const recordsRaw = localStorage.getItem(STORAGE_KEYS.RECORDS);
+  let records = [];
+  if (recordsRaw) {
+    records = parseMigrationArray(recordsRaw, '申请记录');
+    records = records.map((item) => {
+      let changed = false;
+      const result = { ...item };
+
+      if (!result.ship) {
+        result.ship = '远洋一号';
+        repairDetails.records.fixedShip.push({ id: result.id, partName: result.partName, oldValue: null, newValue: result.ship });
+        changed = true;
+      }
+
+      if (!result.timeline || result.timeline.length === 0) {
+        result.timeline = [{ status: result.status || '待审批', at: today, by: '系统迁移', action: 'create' }];
+        repairDetails.records.fixedTimeline.push({ id: result.id, partName: result.partName });
+        changed = true;
+      } else {
+        const hasDispatch = result.timeline.some((s) => s.status === '已发放');
+        if (!result.hasBeenDispatched && hasDispatch) {
+          result.hasBeenDispatched = true;
+        }
+      }
+
+      if (result.purchaseStatus === undefined) {
+        if (result.status === '采购中' || result.status === '已到货') {
+          result.purchaseStatus = result.status;
+          repairDetails.records.fixedPurchaseStatus.push({ id: result.id, partName: result.partName, newValue: result.status });
+          changed = true;
+        } else if (result.hasPurchase) {
+          result.purchaseStatus = '待下单';
+          repairDetails.records.fixedPurchaseStatus.push({ id: result.id, partName: result.partName, newValue: '待下单' });
+          changed = true;
+        }
+      }
+
+      if (result.distribution === undefined) {
+        if (result.hasBeenDispatched) {
+          result.distribution = { hasDistribution: true };
+          repairDetails.records.fixedDistribution.push({ id: result.id, partName: result.partName });
+          changed = true;
+        }
+      }
+
+      if (result.fromTemplateId === undefined) {
+        result.fromTemplateId = '';
+        repairDetails.records.fixedFromTemplateId.push({ id: result.id, partName: result.partName });
+        changed = true;
+      }
+
+      if (changed) {
+        result.dataVersion = 3;
+        result._migratedFrom = item._migratedFrom || 2;
+      }
+      return result;
+    });
+    localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+  }
+
+  const inventoryRaw = localStorage.getItem(STORAGE_KEYS.INVENTORY);
+  let inventory = [];
+  if (inventoryRaw) {
+    inventory = parseMigrationArray(inventoryRaw, '库存记录');
+    inventory = inventory.map((item) => {
+      if (!item.ship) {
+        repairDetails.inventory.fixedShip.push({ id: item.id, partName: item.partName });
+        return { ...item, ship: '远洋一号', dataVersion: 3, _migratedFrom: item._migratedFrom || 2 };
+      }
+      return item;
+    });
+    localStorage.setItem(STORAGE_KEYS.INVENTORY, JSON.stringify(inventory));
+  }
+
+  const templatesRaw = localStorage.getItem(STORAGE_KEYS.TEMPLATES);
+  let templates = [];
+  if (templatesRaw) {
+    templates = parseMigrationArray(templatesRaw, '模板记录');
+    templates = templates.map((item) => {
+      if (!item.ship) {
+        repairDetails.templates.fixedShip.push({ id: item.id, templateName: item.templateName });
+        return { ...item, ship: '远洋一号', dataVersion: 3, _migratedFrom: item._migratedFrom || 2 };
+      }
+      return item;
+    });
+    localStorage.setItem(STORAGE_KEYS.TEMPLATES, JSON.stringify(templates));
+  }
+
+  const purchasesRaw = localStorage.getItem(STORAGE_KEYS.PURCHASES);
+  let purchases = [];
+  if (purchasesRaw) {
+    purchases = parseMigrationArray(purchasesRaw, '采购记录');
+    purchases = purchases.map((item) => {
+      let changed = false;
+      const result = { ...item };
+
+      if (!result.timeline || result.timeline.length === 0) {
+        result.timeline = [{ status: result.status || '待下单', at: today, by: '系统迁移', action: 'create' }];
+        repairDetails.purchases.fixedTimeline.push({ id: result.id, partName: result.partName });
+        changed = true;
+      }
+
+      if (!result.status) {
+        result.status = '待下单';
+        repairDetails.purchases.fixedStatus.push({ id: result.id, partName: result.partName });
+        changed = true;
+      }
+
+      if (changed) {
+        result.dataVersion = 3;
+        result._migratedFrom = item._migratedFrom || 2;
+      }
+      return result;
+    });
+    localStorage.setItem(STORAGE_KEYS.PURCHASES, JSON.stringify(purchases));
+  }
+
+  const distRaw = localStorage.getItem(STORAGE_KEYS.DISTRIBUTION);
+  let distributions = [];
+  if (distRaw) {
+    distributions = parseMigrationArray(distRaw, '发放记录');
+    distributions = distributions.map((item) => {
+      let changed = false;
+      const result = { ...item };
+
+      if (!result.ship) {
+        result.ship = '远洋一号';
+        repairDetails.distributions.fixedShip.push({ id: result.id, partName: result.partName });
+        changed = true;
+      }
+
+      if (!result.applicationId && records.length > 0) {
+        const matchedRecord = records.find((r) =>
+          r.partName === result.partName &&
+          r.system === result.system &&
+          r.ship === result.ship &&
+          (r.status === '已发放' || r.hasBeenDispatched)
+        );
+        if (matchedRecord) {
+          result.applicationId = matchedRecord.id;
+          repairDetails.distributions.fixedApplicationLink.push({ id: result.id, partName: result.partName, linkedApplicationId: matchedRecord.id });
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        result.dataVersion = 3;
+        result._migratedFrom = item._migratedFrom || 2;
+      }
+      return result;
+    });
+    localStorage.setItem(STORAGE_KEYS.DISTRIBUTION, JSON.stringify(distributions));
+  }
+
+  const relationIndex = buildRelationIndex({ records, purchases, distributions, inventory, templates });
+  saveRelationIndex(relationIndex);
+  repairDetails.relationIndex.built = true;
+  repairDetails.relationIndex.count = Object.keys(relationIndex.byId).length;
+
+  const totalFixed =
+    repairDetails.records.fixedShip.length +
+    repairDetails.records.fixedTimeline.length +
+    repairDetails.records.fixedPurchaseStatus.length +
+    repairDetails.records.fixedDistribution.length +
+    repairDetails.records.fixedFromTemplateId.length +
+    repairDetails.inventory.fixedShip.length +
+    repairDetails.templates.fixedShip.length +
+    repairDetails.purchases.fixedTimeline.length +
+    repairDetails.purchases.fixedStatus.length +
+    repairDetails.distributions.fixedShip.length +
+    repairDetails.distributions.fixedApplicationLink.length;
+
+  appendMigrationLog({
+    type: 'migration_details',
+    fromVersion: 2,
+    toVersion: 3,
+    success: true,
+    repairDetails,
+    totalFixed,
+  });
+
+  [...repairDetails.records.fixedShip, ...repairDetails.records.fixedTimeline, ...repairDetails.records.fixedPurchaseStatus].forEach((fix) => {
+    if (fix?.id) {
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.MIGRATION,
+        targetType: 'record',
+        targetId: fix.id,
+        metadata: {
+          fromVersion: 2,
+          toVersion: 3,
+          fixType: 'record_field_repair',
+          fixDetail: fix,
+        },
+        operator: '系统迁移',
+      });
+    }
+  });
+
+  return { repairDetails, totalFixed };
+}
+
 const MIGRATIONS = [
   { from: 0, to: 1, fn: migrateFromV0ToV1 },
   { from: 1, to: 2, fn: migrateFromV1ToV2 },
+  { from: 2, to: 3, fn: migrateFromV2ToV3 },
 ];
 
 export function runMigrations() {
@@ -383,18 +762,30 @@ export function runMigrations() {
 
   let workingVersion = currentVersion;
   const appliedMigrations = [];
+  const allRepairDetails = {};
+  let grandTotalFixed = 0;
 
   try {
     for (const migration of MIGRATIONS) {
       if (migration.from === workingVersion) {
-        migration.fn();
+        const stepResult = migration.fn() || {};
         workingVersion = migration.to;
         appliedMigrations.push({ from: migration.from, to: migration.to });
+
+        const stepRepairDetails = stepResult.repairDetails || stepResult;
+        const stepTotalFixed = stepResult.totalFixed || 0;
+        grandTotalFixed += stepTotalFixed;
+
+        if (stepRepairDetails && typeof stepRepairDetails === 'object') {
+          allRepairDetails[`v${migration.from}_to_v${migration.to}`] = stepRepairDetails;
+        }
         appendMigrationLog({
           type: 'migration',
           fromVersion: migration.from,
           toVersion: migration.to,
           success: true,
+          repairDetails: stepRepairDetails,
+          totalFixed: stepTotalFixed,
         });
       }
     }
@@ -410,6 +801,7 @@ export function runMigrations() {
         toVersion: workingVersion,
         appliedMigrations,
         backupKey,
+        repairDetails: allRepairDetails,
       },
       operator: '系统迁移',
     });
@@ -421,7 +813,9 @@ export function runMigrations() {
       toVersion: workingVersion,
       appliedMigrations,
       backupKey,
-      message: `迁移完成：v${currentVersion} → v${workingVersion}`,
+      repairDetails: allRepairDetails,
+      totalFixed: grandTotalFixed,
+      message: `迁移完成：v${currentVersion} → v${workingVersion}，共修复 ${grandTotalFixed} 处数据问题`,
     };
   } catch (error) {
     console.error('数据迁移失败，正在回滚...', error);
