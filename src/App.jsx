@@ -52,6 +52,7 @@ import {
   buildRelationIndex,
   saveRelationIndex,
   queryRelations,
+  loadAuditLog,
   RELATION_TYPES,
 } from './auditMigrationEngine';
 
@@ -7193,7 +7194,11 @@ function App() {
                                 {details.relationIndex?.built && (
                                   <div className="repair-group">
                                     <span className="repair-label">业务关系索引</span>
-                                    <span className="repair-count">已构建，共 {details.relationIndex.count} 个对象</span>
+                                    <span className="repair-count">
+                                      已构建，共 {details.relationIndex.count} 个对象
+                                      {details.relationIndex.syncQueueCount > 0 && `，同步队列 ${details.relationIndex.syncQueueCount} 条`}
+                                      {details.relationIndex.auditLogCount > 0 && `，审计关联 ${details.relationIndex.auditLogCount} 条`}
+                                    </span>
                                   </div>
                                 )}
                               </div>
@@ -7211,7 +7216,15 @@ function App() {
                         type="button"
                         className="migration-backup-btn"
                         onClick={() => {
-                          const idx = buildRelationIndex({ records, purchases: purchases, distributions: distRecords, inventory, templates });
+                          const idx = buildRelationIndex({
+                            records,
+                            purchases: purchases,
+                            distributions: distRecords,
+                            inventory,
+                            templates,
+                            syncQueue: loadSyncQueue(),
+                            auditLogs: loadAuditLog(),
+                          });
                           saveRelationIndex(idx);
                           setRelationIndex(idx);
                           alert('关系索引已重新构建！');
@@ -7244,6 +7257,38 @@ function App() {
                       <div className="migration-status-item">
                         <span className="migration-status-label">模板→申请关联</span>
                         <strong className="migration-status-value">{Object.keys(relationIndex.templateApplications || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">申请→同步队列</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.applicationSyncOps || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">采购→同步队列</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.purchaseSyncOps || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">库存→同步队列</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.inventorySyncOps || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">申请→审计日志</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.applicationAudits || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">采购→审计日志</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.purchaseAudits || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">发放→审计日志</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.distributionAudits || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">同步队列→对象</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.syncOpToObjects || {}).length}</strong>
+                      </div>
+                      <div className="migration-status-item">
+                        <span className="migration-status-label">审计日志→对象</span>
+                        <strong className="migration-status-value">{Object.keys(relationIndex.auditToObjects || {}).length}</strong>
                       </div>
                     </div>
                   </div>
@@ -7380,7 +7425,11 @@ function App() {
                                 <div className="repair-inline">发放关联申请: {log.repairDetails.distributions.fixedApplicationLink.length}条</div>
                               )}
                               {log.repairDetails.relationIndex?.built && (
-                                <div className="repair-inline">构建关系索引: {log.repairDetails.relationIndex.count}个对象</div>
+                                <div className="repair-inline">
+                                  构建关系索引: {log.repairDetails.relationIndex.count}个对象
+                                  {log.repairDetails.relationIndex.syncQueueCount > 0 && `，同步队列${log.repairDetails.relationIndex.syncQueueCount}条`}
+                                  {log.repairDetails.relationIndex.auditLogCount > 0 && `，审计关联${log.repairDetails.relationIndex.auditLogCount}条`}
+                                </div>
                               )}
                             </div>
                           )}

@@ -69,9 +69,21 @@ export const RELATION_TYPES = {
   APPLICATION_TO_DISTRIBUTION: 'application_distribution',
   APPLICATION_TO_INVENTORY: 'application_inventory',
   APPLICATION_TO_TEMPLATE: 'application_template',
+  APPLICATION_TO_SYNC_OP: 'application_sync_op',
+  APPLICATION_TO_AUDIT: 'application_audit',
   TEMPLATE_TO_APPLICATION: 'template_application',
+  TEMPLATE_TO_SYNC_OP: 'template_sync_op',
+  TEMPLATE_TO_AUDIT: 'template_audit',
   PURCHASE_TO_INVENTORY: 'purchase_inventory',
+  PURCHASE_TO_SYNC_OP: 'purchase_sync_op',
+  PURCHASE_TO_AUDIT: 'purchase_audit',
   INVENTORY_TO_APPLICATION: 'inventory_application',
+  INVENTORY_TO_SYNC_OP: 'inventory_sync_op',
+  INVENTORY_TO_AUDIT: 'inventory_audit',
+  DISTRIBUTION_TO_SYNC_OP: 'distribution_sync_op',
+  DISTRIBUTION_TO_AUDIT: 'distribution_audit',
+  SYNC_OP_TO_OBJECT: 'sync_op_object',
+  AUDIT_TO_OBJECT: 'audit_object',
 };
 
 function uid() {
@@ -149,11 +161,23 @@ export function loadRelationIndex() {
     applicationDistributions: {},
     applicationInventory: {},
     applicationTemplates: {},
+    applicationSyncOps: {},
+    applicationAudits: {},
     templateApplications: {},
+    templateSyncOps: {},
+    templateAudits: {},
     purchaseApplications: {},
     purchaseInventory: {},
+    purchaseSyncOps: {},
+    purchaseAudits: {},
     inventoryApplications: {},
+    inventorySyncOps: {},
+    inventoryAudits: {},
     distributionApplications: {},
+    distributionSyncOps: {},
+    distributionAudits: {},
+    syncOpToObjects: {},
+    auditToObjects: {},
   });
 }
 
@@ -161,7 +185,7 @@ export function saveRelationIndex(index) {
   localStorage.setItem(RELATION_INDEX_KEY, JSON.stringify({ ...index, version: 3 }));
 }
 
-export function buildRelationIndex({ records, purchases, distributions, inventory, templates }) {
+export function buildRelationIndex({ records, purchases, distributions, inventory, templates, syncQueue, auditLogs }) {
   const index = {
     version: 3,
     byId: {},
@@ -169,11 +193,23 @@ export function buildRelationIndex({ records, purchases, distributions, inventor
     applicationDistributions: {},
     applicationInventory: {},
     applicationTemplates: {},
+    applicationSyncOps: {},
+    applicationAudits: {},
     templateApplications: {},
+    templateSyncOps: {},
+    templateAudits: {},
     purchaseApplications: {},
     purchaseInventory: {},
+    purchaseSyncOps: {},
+    purchaseAudits: {},
     inventoryApplications: {},
+    inventorySyncOps: {},
+    inventoryAudits: {},
     distributionApplications: {},
+    distributionSyncOps: {},
+    distributionAudits: {},
+    syncOpToObjects: {},
+    auditToObjects: {},
   };
 
   records.forEach((rec) => {
@@ -259,12 +295,114 @@ export function buildRelationIndex({ records, purchases, distributions, inventor
     });
   });
 
+  if (Array.isArray(syncQueue)) {
+    syncQueue.forEach((op) => {
+      if (op?.id) {
+        index.byId[op.id] = { type: 'syncOp', data: { objectType: op.objectType, opType: op.type, synced: op.synced } };
+        if (op.objectId) {
+          if (!index.syncOpToObjects[op.id]) index.syncOpToObjects[op.id] = [];
+          if (!index.syncOpToObjects[op.id].includes(op.objectId)) {
+            index.syncOpToObjects[op.id].push(op.objectId);
+          }
+          switch (op.objectType) {
+            case 'application':
+              if (!index.applicationSyncOps[op.objectId]) index.applicationSyncOps[op.objectId] = [];
+              if (!index.applicationSyncOps[op.objectId].includes(op.id)) {
+                index.applicationSyncOps[op.objectId].push(op.id);
+              }
+              break;
+            case 'template':
+              if (!index.templateSyncOps[op.objectId]) index.templateSyncOps[op.objectId] = [];
+              if (!index.templateSyncOps[op.objectId].includes(op.id)) {
+                index.templateSyncOps[op.objectId].push(op.id);
+              }
+              break;
+            case 'purchase':
+              if (!index.purchaseSyncOps[op.objectId]) index.purchaseSyncOps[op.objectId] = [];
+              if (!index.purchaseSyncOps[op.objectId].includes(op.id)) {
+                index.purchaseSyncOps[op.objectId].push(op.id);
+              }
+              break;
+            case 'inventory':
+              if (!index.inventorySyncOps[op.objectId]) index.inventorySyncOps[op.objectId] = [];
+              if (!index.inventorySyncOps[op.objectId].includes(op.id)) {
+                index.inventorySyncOps[op.objectId].push(op.id);
+              }
+              break;
+            case 'distribution':
+              if (!index.distributionSyncOps[op.objectId]) index.distributionSyncOps[op.objectId] = [];
+              if (!index.distributionSyncOps[op.objectId].includes(op.id)) {
+                index.distributionSyncOps[op.objectId].push(op.id);
+              }
+              break;
+          }
+        }
+      }
+    });
+  }
+
+  if (Array.isArray(auditLogs)) {
+    auditLogs.forEach((evt) => {
+      if (evt?.id) {
+        index.byId[evt.id] = { type: 'audit', data: { eventType: evt.eventType, targetType: evt.targetType, operator: evt.operator } };
+        if (evt.targetId) {
+          if (!index.auditToObjects[evt.id]) index.auditToObjects[evt.id] = [];
+          if (!index.auditToObjects[evt.id].includes(evt.targetId)) {
+            index.auditToObjects[evt.id].push(evt.targetId);
+          }
+          switch (evt.targetType) {
+            case 'application':
+            case 'record':
+              if (!index.applicationAudits[evt.targetId]) index.applicationAudits[evt.targetId] = [];
+              if (!index.applicationAudits[evt.targetId].includes(evt.id)) {
+                index.applicationAudits[evt.targetId].push(evt.id);
+              }
+              break;
+            case 'template':
+              if (!index.templateAudits[evt.targetId]) index.templateAudits[evt.targetId] = [];
+              if (!index.templateAudits[evt.targetId].includes(evt.id)) {
+                index.templateAudits[evt.targetId].push(evt.id);
+              }
+              break;
+            case 'purchase':
+              if (!index.purchaseAudits[evt.targetId]) index.purchaseAudits[evt.targetId] = [];
+              if (!index.purchaseAudits[evt.targetId].includes(evt.id)) {
+                index.purchaseAudits[evt.targetId].push(evt.id);
+              }
+              break;
+            case 'inventory':
+              if (!index.inventoryAudits[evt.targetId]) index.inventoryAudits[evt.targetId] = [];
+              if (!index.inventoryAudits[evt.targetId].includes(evt.id)) {
+                index.inventoryAudits[evt.targetId].push(evt.id);
+              }
+              break;
+            case 'distribution':
+              if (!index.distributionAudits[evt.targetId]) index.distributionAudits[evt.targetId] = [];
+              if (!index.distributionAudits[evt.targetId].includes(evt.id)) {
+                index.distributionAudits[evt.targetId].push(evt.id);
+              }
+              break;
+          }
+        }
+      }
+    });
+  }
+
   return index;
 }
 
 export function queryRelations(objectType, objectId) {
   const index = loadRelationIndex();
-  const result = { purchases: [], distributions: [], inventory: [], templates: [], applications: [] };
+  const result = {
+    purchases: [],
+    distributions: [],
+    inventory: [],
+    templates: [],
+    applications: [],
+    syncOps: [],
+    audits: [],
+    targetObject: null,
+  };
   switch (objectType) {
     case 'record':
     case 'application':
@@ -272,19 +410,35 @@ export function queryRelations(objectType, objectId) {
       result.distributions = index.applicationDistributions[objectId] || [];
       result.inventory = index.applicationInventory[objectId] || [];
       result.templates = index.applicationTemplates[objectId] || [];
+      result.syncOps = index.applicationSyncOps[objectId] || [];
+      result.audits = index.applicationAudits[objectId] || [];
       break;
     case 'purchase':
       result.applications = index.purchaseApplications[objectId] || [];
       result.inventory = index.purchaseInventory[objectId] || [];
+      result.syncOps = index.purchaseSyncOps[objectId] || [];
+      result.audits = index.purchaseAudits[objectId] || [];
       break;
     case 'distribution':
       result.applications = index.distributionApplications[objectId] || [];
+      result.syncOps = index.distributionSyncOps[objectId] || [];
+      result.audits = index.distributionAudits[objectId] || [];
       break;
     case 'inventory':
       result.applications = index.inventoryApplications[objectId] || [];
+      result.syncOps = index.inventorySyncOps[objectId] || [];
+      result.audits = index.inventoryAudits[objectId] || [];
       break;
     case 'template':
       result.applications = index.templateApplications[objectId] || [];
+      result.syncOps = index.templateSyncOps[objectId] || [];
+      result.audits = index.templateAudits[objectId] || [];
+      break;
+    case 'syncOp':
+      result.targetObject = index.syncOpToObjects[objectId] ? index.syncOpToObjects[objectId][0] : null;
+      break;
+    case 'audit':
+      result.targetObject = index.auditToObjects[objectId] ? index.auditToObjects[objectId][0] : null;
       break;
   }
   return result;
@@ -505,7 +659,7 @@ function migrateFromV2ToV3() {
     templates: { fixedShip: [] },
     purchases: { fixedTimeline: [], fixedStatus: [] },
     distributions: { fixedShip: [], fixedApplicationLink: [] },
-    relationIndex: { built: false, count: 0 },
+    relationIndex: { built: false, count: 0, syncQueueCount: 0, auditLogCount: 0 },
   };
 
   const recordsRaw = localStorage.getItem(STORAGE_KEYS.RECORDS);
@@ -662,10 +816,15 @@ function migrateFromV2ToV3() {
     localStorage.setItem(STORAGE_KEYS.DISTRIBUTION, JSON.stringify(distributions));
   }
 
-  const relationIndex = buildRelationIndex({ records, purchases, distributions, inventory, templates });
+  const syncQueue = safeParse(localStorage.getItem(STORAGE_KEYS.SYNC_QUEUE), []);
+  const auditLogs = safeParse(localStorage.getItem(STORAGE_KEYS.AUDIT_LOG), []);
+
+  const relationIndex = buildRelationIndex({ records, purchases, distributions, inventory, templates, syncQueue, auditLogs });
   saveRelationIndex(relationIndex);
   repairDetails.relationIndex.built = true;
   repairDetails.relationIndex.count = Object.keys(relationIndex.byId).length;
+  repairDetails.relationIndex.syncQueueCount = (relationIndex.syncOpToObjects && Object.keys(relationIndex.syncOpToObjects).length) || 0;
+  repairDetails.relationIndex.auditLogCount = (relationIndex.auditToObjects && Object.keys(relationIndex.auditToObjects).length) || 0;
 
   const totalFixed =
     repairDetails.records.fixedShip.length +
