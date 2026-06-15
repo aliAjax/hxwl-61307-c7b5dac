@@ -666,6 +666,9 @@ function App() {
           const opts = appConfig.fields.find(f => f.key === 'urgency')?.options || [];
           if (!opts.includes(record.urgency)) errors.push(`紧急程度"${record.urgency}"不在允许列表中，可选：${opts.join('、')}`);
         }
+        if (record.status) {
+          if (!appConfig.statuses.includes(record.status)) errors.push(`状态"${record.status}"不在允许列表中，可选：${appConfig.statuses.join('、')}`);
+        }
         if (record.qty) {
           const n = Number(record.qty);
           if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) errors.push(`需求数量必须是正整数，当前值：${record.qty}`);
