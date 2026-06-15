@@ -873,6 +873,9 @@ function App() {
   const [highlightRecordId, setHighlightRecordId] = useState(null);
   const [highlightPurchaseId, setHighlightPurchaseId] = useState(null);
   const [highlightInventoryId, setHighlightInventoryId] = useState(null);
+  const [highlightDistId, setHighlightDistId] = useState(null);
+  const [highlightTemplateId, setHighlightTemplateId] = useState(null);
+  const [highlightConflictId, setHighlightConflictId] = useState(null);
 
   const pendingCount = getPendingOperations().length;
   const unresolvedConflictCount = conflicts.filter((c) => !c.resolved).length;
@@ -1203,6 +1206,9 @@ function App() {
     setHighlightRecordId(null);
     setHighlightPurchaseId(null);
     setHighlightInventoryId(null);
+    setHighlightDistId(null);
+    setHighlightTemplateId(null);
+    setHighlightConflictId(null);
     
     switch (targetType) {
       case 'record':
@@ -1226,10 +1232,26 @@ function App() {
       case 'distribution':
         setActiveTab('distribution');
         setSelectedDist(distRecords.find(d => d.id === targetId) || null);
+        setHighlightDistId(targetId);
+        setTimeout(() => setHighlightDistId(null), 3000);
         break;
       case 'template':
         setActiveTab('templates');
         setSelectedTemplate(templates.find(t => t.id === targetId) || null);
+        setHighlightTemplateId(targetId);
+        setTimeout(() => setHighlightTemplateId(null), 3000);
+        break;
+      case 'conflict':
+        setActiveTab('sync');
+        setSyncTab('conflicts');
+        setSelectedConflict(conflicts.find(c => c.id === targetId) || null);
+        setHighlightConflictId(targetId);
+        setExpandedConflicts(prev => ({ ...prev, [targetId]: true }));
+        setTimeout(() => setHighlightConflictId(null), 3000);
+        break;
+      case 'migration':
+        setActiveTab('audit');
+        setAuditTab('migration');
         break;
       default:
         break;
@@ -4791,7 +4813,7 @@ function App() {
                   <p className="empty">暂无发放记录。</p>
                 ) : (
                   distRecords.map((item) => (
-                    <article className="record dist-record" key={item.id} onClick={() => setSelectedDist(item)}>
+                    <article className={'record dist-record' + (highlightDistId === item.id ? ' record-highlight' : '')} key={item.id} onClick={() => setSelectedDist(item)}>
                       <div className="record-head">
                         <div>
                           <h3>{item.partName}</h3>
@@ -4968,7 +4990,7 @@ function App() {
                   <p className="empty">暂无模板。</p>
                 ) : (
                   filteredTemplates.map((item) => (
-                    <article className="record template-record" key={item.id} onClick={() => setSelectedTemplate(item)}>
+                    <article className={'record template-record' + (highlightTemplateId === item.id ? ' record-highlight' : '')} key={item.id} onClick={() => setSelectedTemplate(item)}>
                       <div className="record-head">
                         <div>
                           <h3>{item.templateName}</h3>
@@ -5915,7 +5937,7 @@ function App() {
                     conflicts.map((conflict) => (
                       <div
                         key={conflict.id}
-                        className={'sync-conflict-item ' + (conflict.resolved ? 'resolved' : '') + ' severity-' + conflict.severity}
+                        className={'sync-conflict-item ' + (conflict.resolved ? 'resolved' : '') + ' severity-' + conflict.severity + (highlightConflictId === conflict.id ? ' record-highlight' : '')}
                       >
                         <div
                           className="sync-conflict-header"
@@ -7195,6 +7217,56 @@ function App() {
                               </div>
                             </div>
                           )}
+                          {traceSearchResult.relatedObjects.distribution?.length > 0 && (
+                            <div className="trace-object-group">
+                              <h4>
+                                <PackagePlus size={14} /> 发放记录 ({traceSearchResult.relatedObjects.distribution.length})
+                              </h4>
+                              <div className="trace-object-list">
+                                {traceSearchResult.relatedObjects.distribution.map((id) => {
+                                  const dist = distRecords.find(d => d.id === id);
+                                  return (
+                                    <button
+                                      key={id}
+                                      className="trace-object-item"
+                                      onClick={() => handleSelectTraceObject('distribution', id)}
+                                    >
+                                      <span className="trace-object-name">
+                                        {dist?.partName || '未知发放'}
+                                      </span>
+                                      <span className="trace-object-id">#{id.slice(0, 10)}</span>
+                                      {dist && <span className="trace-object-meta">{dist.ship} · 发放{dist.distQty}件</span>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                          {traceSearchResult.relatedObjects.template?.length > 0 && (
+                            <div className="trace-object-group">
+                              <h4>
+                                <Bookmark size={14} /> 常用模板 ({traceSearchResult.relatedObjects.template.length})
+                              </h4>
+                              <div className="trace-object-list">
+                                {traceSearchResult.relatedObjects.template.map((id) => {
+                                  const tmpl = templates.find(t => t.id === id);
+                                  return (
+                                    <button
+                                      key={id}
+                                      className="trace-object-item"
+                                      onClick={() => handleSelectTraceObject('template', id)}
+                                    >
+                                      <span className="trace-object-name">
+                                        {tmpl?.templateName || '未知模板'}
+                                      </span>
+                                      <span className="trace-object-id">#{id.slice(0, 10)}</span>
+                                      {tmpl && <span className="trace-object-meta">{tmpl.partName} · {tmpl.system}</span>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </>
                     )}
@@ -7215,6 +7287,9 @@ function App() {
                           {selectedTraceObject.type === 'record' ? '备件申请' :
                            selectedTraceObject.type === 'purchase' ? '采购任务' :
                            selectedTraceObject.type === 'inventory' ? '库存记录' :
+                           selectedTraceObject.type === 'distribution' ? '发放记录' :
+                           selectedTraceObject.type === 'template' ? '常用模板' :
+                           selectedTraceObject.type === 'conflict' ? '同步冲突' :
                            selectedTraceObject.type} 时间线
                         </h3>
                         <span className="trace-timeline-id">#{selectedTraceObject.id.slice(0, 12)}</span>
@@ -7241,7 +7316,9 @@ function App() {
                                    event.targetType === 'purchase' ? '采购' :
                                    event.targetType === 'inventory' ? '库存' :
                                    event.targetType === 'distribution' ? '发放' :
-                                   event.targetType === 'template' ? '模板' : event.targetType}
+                                   event.targetType === 'template' ? '模板' :
+                                   event.targetType === 'conflict' ? '冲突' :
+                                   event.targetType === 'migration' ? '迁移' : event.targetType}
                                   :{event.targetId.slice(0, 8)}
                                 </span>
                                 <button
