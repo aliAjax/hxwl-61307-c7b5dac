@@ -506,6 +506,73 @@ function statusClass(status) {
   return ['status-a', 'status-b', 'status-c', 'status-d'][index] || 'status-a';
 }
 
+function describeOperation(op) {
+  const t = op.type;
+  const objType = op.objectType || OBJECT_TYPES.APPLICATION;
+  const payload = op.payload || {};
+  const objLabel = OBJECT_TYPE_LABELS[objType] || objType;
+  if (objType === OBJECT_TYPES.INVENTORY) {
+    switch (t) {
+      case OP_TYPES.CREATE:
+        return `新增库存「${payload.partName || payload.record?.partName || '未知备件'}」`;
+      case OP_TYPES.UPDATE:
+        return `更新库存「${payload.partName || '未知'}」`;
+      case OP_TYPES.DELETE:
+        return `删除库存记录`;
+      default:
+        return `[库存] ${t}`;
+    }
+  }
+  if (objType === OBJECT_TYPES.PURCHASE) {
+    switch (t) {
+      case OP_TYPES.CREATE:
+        return `创建采购「${payload.partName || '未知备件'}」`;
+      case OP_TYPES.UPDATE_STATUS:
+        return `更新采购状态「${payload.fromStatus || '-'} → ${payload.toStatus}」`;
+      case OP_TYPES.DELETE:
+        return `删除采购记录`;
+      default:
+        return `[采购] ${t}`;
+    }
+  }
+  if (objType === OBJECT_TYPES.TEMPLATE) {
+    switch (t) {
+      case OP_TYPES.CREATE:
+        return `创建模板「${payload.templateName || payload.record?.templateName || '未知模板'}」`;
+      case OP_TYPES.DELETE:
+        return `删除模板「${payload.templateName || '未知模板'}」`;
+      default:
+        return `[模板] ${t}`;
+    }
+  }
+  if (objType === OBJECT_TYPES.DISTRIBUTION) {
+    switch (t) {
+      case OP_TYPES.CREATE:
+        return `登记发放「${payload.partName || '未知备件'}（${payload.distQty || 0}件）」`;
+      case OP_TYPES.DELETE:
+        return `删除发放记录`;
+      default:
+        return `[发放] ${t}`;
+    }
+  }
+  switch (t) {
+    case OP_TYPES.CREATE:
+      return `创建申请「${payload.partName || payload.record?.partName || '未知'}」`;
+    case OP_TYPES.UPDATE_STATUS:
+      return `变更状态「${payload.fromStatus} → ${payload.toStatus}」`;
+    case OP_TYPES.APPROVE:
+      return `批准申请（数量${payload.approvedQty || '-'}）`;
+    case OP_TYPES.REJECT:
+      return `驳回申请`;
+    case OP_TYPES.DELETE:
+      return `删除申请记录`;
+    case OP_TYPES.DISPATCH:
+      return `发放出库`;
+    default:
+      return `[${objLabel}] ${t}`;
+  }
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState('application');
 
@@ -691,6 +758,14 @@ function App() {
   }, []);
 
   const enqueueAndRefresh = useCallback((operation) => {
+    if (isOnline) {
+      addLog(
+        operation.type === OP_TYPES.CREATE ? 'create' :
+        operation.type === OP_TYPES.DELETE ? 'delete' : 'update',
+        `在线操作已完成：${describeOperation(operation)}`
+      );
+      return null;
+    }
     const op = enqueueOperation(operation);
     refreshSyncState();
     addLog(
@@ -699,74 +774,7 @@ function App() {
       `已记录离线操作：${describeOperation(operation)}`
     );
     return op;
-  }, [refreshSyncState, addLog]);
-
-  function describeOperation(op) {
-    const t = op.type;
-    const objType = op.objectType || OBJECT_TYPES.APPLICATION;
-    const payload = op.payload || {};
-    const objLabel = OBJECT_TYPE_LABELS[objType] || objType;
-    if (objType === OBJECT_TYPES.INVENTORY) {
-      switch (t) {
-        case OP_TYPES.CREATE:
-          return `新增库存「${payload.partName || payload.record?.partName || '未知备件'}」`;
-        case OP_TYPES.UPDATE:
-          return `更新库存「${payload.partName || '未知'}」`;
-        case OP_TYPES.DELETE:
-          return `删除库存记录`;
-        default:
-          return `[库存] ${t}`;
-      }
-    }
-    if (objType === OBJECT_TYPES.PURCHASE) {
-      switch (t) {
-        case OP_TYPES.CREATE:
-          return `创建采购「${payload.partName || '未知备件'}」`;
-        case OP_TYPES.UPDATE_STATUS:
-          return `更新采购状态「${payload.fromStatus || '-'} → ${payload.toStatus}」`;
-        case OP_TYPES.DELETE:
-          return `删除采购记录`;
-        default:
-          return `[采购] ${t}`;
-      }
-    }
-    if (objType === OBJECT_TYPES.TEMPLATE) {
-      switch (t) {
-        case OP_TYPES.CREATE:
-          return `创建模板「${payload.templateName || payload.record?.templateName || '未知模板'}」`;
-        case OP_TYPES.DELETE:
-          return `删除模板「${payload.templateName || '未知模板'}」`;
-        default:
-          return `[模板] ${t}`;
-      }
-    }
-    if (objType === OBJECT_TYPES.DISTRIBUTION) {
-      switch (t) {
-        case OP_TYPES.CREATE:
-          return `登记发放「${payload.partName || '未知备件'}（${payload.distQty || 0}件）」`;
-        case OP_TYPES.DELETE:
-          return `删除发放记录`;
-        default:
-          return `[发放] ${t}`;
-      }
-    }
-    switch (t) {
-      case OP_TYPES.CREATE:
-        return `创建申请「${payload.partName || payload.record?.partName || '未知'}」`;
-      case OP_TYPES.UPDATE_STATUS:
-        return `变更状态「${payload.fromStatus} → ${payload.toStatus}」`;
-      case OP_TYPES.APPROVE:
-        return `批准申请（数量${payload.approvedQty || '-'}）`;
-      case OP_TYPES.REJECT:
-        return `驳回申请`;
-      case OP_TYPES.DELETE:
-        return `删除申请记录`;
-      case OP_TYPES.DISPATCH:
-        return `发放出库`;
-      default:
-        return `[${objLabel}] ${t}`;
-    }
-  }
+  }, [isOnline, refreshSyncState, addLog]);
 
   const safePersist = useCallback((next) => {
     persist(next);
@@ -866,20 +874,26 @@ function App() {
       let syncedCount = 0;
       const syncedByType = {};
       const queue = loadSyncQueue();
-      const updatedQueue = queue.map((op) => {
-        if (op.synced) return op;
-        if (opsToRemoveIds.has(op.id)) {
-          syncedCount += 1;
-          const t = op.objectType || OBJECT_TYPES.APPLICATION;
-          syncedByType[t] = (syncedByType[t] || 0) + 1;
-          return { ...op, synced: true, syncAttempts: op.syncAttempts + 1, error: null, syncedAt: Date.now(), removedByConflict: true };
-        }
-        if (conflictOpsIds.has(op.id)) return op;
+      const queueMap = new Map(queue.map((op) => [op.id, op]));
+      for (const op of sortedOps) {
+        if (op.synced) continue;
+        if (conflictOpsIds.has(op.id)) continue;
+        const existing = queueMap.get(op.id);
+        if (!existing) continue;
+        const opType = op.objectType || OBJECT_TYPES.APPLICATION;
+        addLog('info', `正在同步[${OBJECT_TYPE_LABELS[opType] || opType}]：${describeOperation(op)}`);
+        await simulateServerLatency();
         syncedCount += 1;
-        const t = op.objectType || OBJECT_TYPES.APPLICATION;
-        syncedByType[t] = (syncedByType[t] || 0) + 1;
-        return { ...op, synced: true, syncAttempts: op.syncAttempts + 1, error: null, syncedAt: Date.now() };
-      });
+        syncedByType[opType] = (syncedByType[opType] || 0) + 1;
+        const now = Date.now();
+        if (opsToRemoveIds.has(op.id)) {
+          queueMap.set(op.id, { ...existing, synced: true, syncAttempts: existing.syncAttempts + 1, error: null, syncedAt: now, removedByConflict: true });
+        } else {
+          queueMap.set(op.id, { ...existing, synced: true, syncAttempts: existing.syncAttempts + 1, error: null, syncedAt: now });
+        }
+        setSyncProgress({ current: 3 + syncedCount, total: pendingOps.length + 3, message: `已同步 ${syncedCount}/${pendingOps.length}` });
+      }
+      const updatedQueue = Array.from(queueMap.values());
       saveSyncQueue(updatedQueue);
       setSyncQueue(updatedQueue);
 
