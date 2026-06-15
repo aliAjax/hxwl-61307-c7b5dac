@@ -4634,6 +4634,8 @@ textarea { min-height: 76px; resize: vertical; }
   align-items: center;
   justify-content: center;
   gap: 6px;
+  width: auto;
+  margin-top: 0;
   padding: 10px 20px;
   border: none;
   border-radius: 8px;

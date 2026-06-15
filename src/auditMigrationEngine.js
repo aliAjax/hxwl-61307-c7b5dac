@@ -19,6 +19,7 @@ export const AUDIT_EVENT_TYPES = {
   PURCHASE_ARRIVE: 'purchase_arrive',
   PURCHASE_DELETE: 'purchase_delete',
   MIGRATION: 'migration',
+  SYNC_CONFLICT_RESOLVE: 'sync_conflict_resolve',
   UPDATE_STATUS: 'update_status',
   INVENTORY_DEDUCT: 'inventory_deduct',
   INVENTORY_RESTORE: 'inventory_restore',
@@ -39,6 +40,7 @@ export const AUDIT_EVENT_LABELS = {
   purchase_arrive: '采购到货回填',
   purchase_delete: '删除采购任务',
   migration: '数据迁移',
+  sync_conflict_resolve: '同步冲突处理',
   update_status: '状态变更',
   inventory_deduct: '库存扣减',
   inventory_restore: '库存恢复',
@@ -658,6 +660,8 @@ export function searchAuditEventsByObject(query) {
     inventory: new Set(),
     distribution: new Set(),
     template: new Set(),
+    conflict: new Set(),
+    migration: new Set(),
   };
   
   log.forEach((event) => {
@@ -676,7 +680,9 @@ export function searchAuditEventsByObject(query) {
       system.includes(q) ||
       (metadata.purchaseId && String(metadata.purchaseId).toLowerCase().includes(q)) ||
       (metadata.applicationId && String(metadata.applicationId).toLowerCase().includes(q)) ||
-      (metadata.inventoryId && String(metadata.inventoryId).toLowerCase().includes(q))
+      (metadata.inventoryId && String(metadata.inventoryId).toLowerCase().includes(q)) ||
+      (metadata.distRecordId && String(metadata.distRecordId).toLowerCase().includes(q)) ||
+      (metadata.conflictId && String(metadata.conflictId).toLowerCase().includes(q))
     ) {
       matchedEventIds.add(event.id);
       
@@ -690,6 +696,10 @@ export function searchAuditEventsByObject(query) {
         relatedObjectIds.distribution.add(event.targetId);
       } else if (event.targetType === 'template') {
         relatedObjectIds.template.add(event.targetId);
+      } else if (event.targetType === 'conflict') {
+        relatedObjectIds.conflict.add(event.targetId);
+      } else if (event.targetType === 'migration' || event.eventType === AUDIT_EVENT_TYPES.MIGRATION) {
+        relatedObjectIds.migration.add(event.targetId);
       }
       
       if (metadata.applicationId) {
@@ -700,6 +710,15 @@ export function searchAuditEventsByObject(query) {
       }
       if (metadata.inventoryId) {
         relatedObjectIds.inventory.add(metadata.inventoryId);
+      }
+      if (metadata.distRecordId) {
+        relatedObjectIds.distribution.add(metadata.distRecordId);
+      }
+      if (metadata.conflictId) {
+        relatedObjectIds.conflict.add(metadata.conflictId);
+      }
+      if (event.eventType === AUDIT_EVENT_TYPES.MIGRATION) {
+        relatedObjectIds.migration.add(event.targetId);
       }
     }
   });
@@ -708,6 +727,7 @@ export function searchAuditEventsByObject(query) {
     if (matchedEventIds.has(event.id)) return;
     
     const metadata = event.metadata || {};
+    const hasRelatedContext = Object.values(relatedObjectIds).some((ids) => ids.size > 0);
     
     if (
       relatedObjectIds.record.has(event.targetId) ||
@@ -715,9 +735,14 @@ export function searchAuditEventsByObject(query) {
       relatedObjectIds.inventory.has(event.targetId) ||
       relatedObjectIds.distribution.has(event.targetId) ||
       relatedObjectIds.template.has(event.targetId) ||
+      relatedObjectIds.conflict.has(event.targetId) ||
+      relatedObjectIds.migration.has(event.targetId) ||
       (metadata.applicationId && relatedObjectIds.record.has(metadata.applicationId)) ||
       (metadata.purchaseId && relatedObjectIds.purchase.has(metadata.purchaseId)) ||
-      (metadata.inventoryId && relatedObjectIds.inventory.has(metadata.inventoryId))
+      (metadata.inventoryId && relatedObjectIds.inventory.has(metadata.inventoryId)) ||
+      (metadata.distRecordId && relatedObjectIds.distribution.has(metadata.distRecordId)) ||
+      (metadata.conflictId && relatedObjectIds.conflict.has(metadata.conflictId)) ||
+      (event.eventType === AUDIT_EVENT_TYPES.MIGRATION && hasRelatedContext)
     ) {
       matchedEventIds.add(event.id);
       
@@ -731,6 +756,10 @@ export function searchAuditEventsByObject(query) {
         relatedObjectIds.distribution.add(event.targetId);
       } else if (event.targetType === 'template') {
         relatedObjectIds.template.add(event.targetId);
+      } else if (event.targetType === 'conflict') {
+        relatedObjectIds.conflict.add(event.targetId);
+      } else if (event.targetType === 'migration' || event.eventType === AUDIT_EVENT_TYPES.MIGRATION) {
+        relatedObjectIds.migration.add(event.targetId);
       }
       
       if (metadata.applicationId) {
@@ -741,6 +770,15 @@ export function searchAuditEventsByObject(query) {
       }
       if (metadata.inventoryId) {
         relatedObjectIds.inventory.add(metadata.inventoryId);
+      }
+      if (metadata.distRecordId) {
+        relatedObjectIds.distribution.add(metadata.distRecordId);
+      }
+      if (metadata.conflictId) {
+        relatedObjectIds.conflict.add(metadata.conflictId);
+      }
+      if (event.eventType === AUDIT_EVENT_TYPES.MIGRATION) {
+        relatedObjectIds.migration.add(event.targetId);
       }
     }
   });
@@ -755,6 +793,8 @@ export function searchAuditEventsByObject(query) {
     inventory: Array.from(relatedObjectIds.inventory),
     distribution: Array.from(relatedObjectIds.distribution),
     template: Array.from(relatedObjectIds.template),
+    conflict: Array.from(relatedObjectIds.conflict),
+    migration: Array.from(relatedObjectIds.migration),
   };
   
   return { events: matchedEvents, relatedObjects };
@@ -769,6 +809,8 @@ export function getObjectTimeline(targetType, targetId) {
     inventory: new Set(),
     distribution: new Set(),
     template: new Set(),
+    conflict: new Set(),
+    migration: new Set(),
   };
   
   relatedIds[targetType]?.add(targetId);
@@ -782,17 +824,26 @@ export function getObjectTimeline(targetType, targetId) {
       if (metadata.purchaseId) relatedIds.purchase.add(metadata.purchaseId);
       if (metadata.inventoryId) relatedIds.inventory.add(metadata.inventoryId);
       if (metadata.distRecordId) relatedIds.distribution.add(metadata.distRecordId);
+      if (metadata.conflictId) relatedIds.conflict.add(metadata.conflictId);
+      if (event.eventType === AUDIT_EVENT_TYPES.MIGRATION) relatedIds.migration.add(event.targetId);
     }
     
     if (
       (metadata.applicationId && relatedIds.record.has(metadata.applicationId)) ||
       (metadata.purchaseId && relatedIds.purchase.has(metadata.purchaseId)) ||
-      (metadata.inventoryId && relatedIds.inventory.has(metadata.inventoryId))
+      (metadata.inventoryId && relatedIds.inventory.has(metadata.inventoryId)) ||
+      (metadata.distRecordId && relatedIds.distribution.has(metadata.distRecordId)) ||
+      (metadata.conflictId && relatedIds.conflict.has(metadata.conflictId)) ||
+      event.eventType === AUDIT_EVENT_TYPES.MIGRATION
     ) {
       relatedEventIds.add(event.id);
       if (event.targetType === 'record') relatedIds.record.add(event.targetId);
       if (event.targetType === 'purchase') relatedIds.purchase.add(event.targetId);
       if (event.targetType === 'inventory') relatedIds.inventory.add(event.targetId);
+      if (event.targetType === 'distribution') relatedIds.distribution.add(event.targetId);
+      if (event.targetType === 'template') relatedIds.template.add(event.targetId);
+      if (event.targetType === 'conflict') relatedIds.conflict.add(event.targetId);
+      if (event.eventType === AUDIT_EVENT_TYPES.MIGRATION) relatedIds.migration.add(event.targetId);
     }
   });
   
@@ -808,6 +859,8 @@ export function getObjectTimeline(targetType, targetId) {
       inventory: Array.from(relatedIds.inventory),
       distribution: Array.from(relatedIds.distribution),
       template: Array.from(relatedIds.template),
+      conflict: Array.from(relatedIds.conflict),
+      migration: Array.from(relatedIds.migration),
     },
   };
 }

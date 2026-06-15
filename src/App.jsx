@@ -1061,6 +1061,32 @@ function App() {
             workingRecords = applied.records;
             applied.opsToRemove.forEach((id) => opsToRemoveIds.add(id));
             addLog('success', `自动解决冲突：${c.description} → ${applied.note}`);
+            const relatedRecord = currentRecords.find((r) => r.id === c.targetId)
+              || c.localRecord
+              || c.remoteRecord
+              || c.baselineRecord
+              || c.deletedRecord
+              || null;
+            logAuditEvent({
+              eventType: AUDIT_EVENT_TYPES.SYNC_CONFLICT_RESOLVE,
+              targetType: 'conflict',
+              targetId: c.id,
+              beforeData: c,
+              afterData: autoRes.conflict,
+              metadata: {
+                conflictId: c.id,
+                conflictType: c.type,
+                strategy: strat,
+                applicationId: c.targetId,
+                remoteTargetId: c.remoteTargetId,
+                affectedOps: c.affectedOps || [],
+                note: applied.note,
+                ship: relatedRecord?.ship,
+                partName: relatedRecord?.partName,
+                system: relatedRecord?.system,
+              },
+              operator: '系统同步',
+            });
           }
         } else {
           unresolvedConfs.push(c);
@@ -1180,6 +1206,32 @@ function App() {
       );
       saveSyncQueue(updated);
       addLog('success', `手动解决冲突：${conflict.description} → ${applied.note}`);
+      const relatedRecord = records.find((r) => r.id === conflict.targetId)
+        || conflict.localRecord
+        || conflict.remoteRecord
+        || conflict.baselineRecord
+        || conflict.deletedRecord
+        || null;
+      logAuditEvent({
+        eventType: AUDIT_EVENT_TYPES.SYNC_CONFLICT_RESOLVE,
+        targetType: 'conflict',
+        targetId: conflict.id,
+        beforeData: conflict,
+        afterData: resolved,
+        metadata: {
+          conflictId: conflict.id,
+          conflictType: conflict.type,
+          strategy,
+          applicationId: conflict.targetId,
+          remoteTargetId: conflict.remoteTargetId,
+          affectedOps: conflict.affectedOps || [],
+          note: applied.note,
+          ship: relatedRecord?.ship,
+          partName: relatedRecord?.partName,
+          system: relatedRecord?.system,
+        },
+        operator: operatorName,
+      });
     }
 
     const remainingUnresolved = list.filter((c) => !c.resolved);
@@ -1191,7 +1243,7 @@ function App() {
       performSync().catch(() => {});
     }
     refreshSyncState();
-  }, [records, safePersist, addLog, refreshSyncState, performSync]);
+  }, [records, safePersist, addLog, refreshSyncState, performSync, operatorName]);
 
   const resetSyncSystem = useCallback(() => {
     if (!confirm('确认重置整个同步系统？这会清空同步队列、冲突记录和基线，不会影响现有业务数据。')) return;
@@ -7267,6 +7319,51 @@ function App() {
                               </div>
                             </div>
                           )}
+                          {traceSearchResult.relatedObjects.conflict?.length > 0 && (
+                            <div className="trace-object-group">
+                              <h4>
+                                <AlertOctagon size={14} /> 同步冲突 ({traceSearchResult.relatedObjects.conflict.length})
+                              </h4>
+                              <div className="trace-object-list">
+                                {traceSearchResult.relatedObjects.conflict.map((id) => {
+                                  const conflict = conflicts.find(c => c.id === id);
+                                  return (
+                                    <button
+                                      key={id}
+                                      className="trace-object-item"
+                                      onClick={() => handleSelectTraceObject('conflict', id)}
+                                    >
+                                      <span className="trace-object-name">
+                                        {conflict?.description || '同步冲突'}
+                                      </span>
+                                      <span className="trace-object-id">#{id.slice(0, 10)}</span>
+                                      {conflict && <span className="trace-object-meta">{conflict.resolved ? '已处理' : '待处理'} · {conflict.type}</span>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                          {traceSearchResult.relatedObjects.migration?.length > 0 && (
+                            <div className="trace-object-group">
+                              <h4>
+                                <Database size={14} /> 迁移事件 ({traceSearchResult.relatedObjects.migration.length})
+                              </h4>
+                              <div className="trace-object-list">
+                                {traceSearchResult.relatedObjects.migration.map((id) => (
+                                  <button
+                                    key={id}
+                                    className="trace-object-item"
+                                    onClick={() => handleSelectTraceObject('migration', id)}
+                                  >
+                                    <span className="trace-object-name">数据迁移</span>
+                                    <span className="trace-object-id">#{id.slice(0, 10)}</span>
+                                    <span className="trace-object-meta">迁移与备份</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </>
                     )}
@@ -7290,6 +7387,7 @@ function App() {
                            selectedTraceObject.type === 'distribution' ? '发放记录' :
                            selectedTraceObject.type === 'template' ? '常用模板' :
                            selectedTraceObject.type === 'conflict' ? '同步冲突' :
+                           selectedTraceObject.type === 'migration' ? '迁移事件' :
                            selectedTraceObject.type} 时间线
                         </h3>
                         <span className="trace-timeline-id">#{selectedTraceObject.id.slice(0, 12)}</span>
@@ -7312,7 +7410,8 @@ function App() {
                                   {AUDIT_EVENT_LABELS[event.eventType] || event.eventType}
                                 </span>
                                 <span className="trace-event-target">
-                                  {event.targetType === 'record' ? '申请' :
+                                  {event.eventType === AUDIT_EVENT_TYPES.MIGRATION ? '迁移' :
+                                   event.targetType === 'record' ? '申请' :
                                    event.targetType === 'purchase' ? '采购' :
                                    event.targetType === 'inventory' ? '库存' :
                                    event.targetType === 'distribution' ? '发放' :
@@ -7323,7 +7422,7 @@ function App() {
                                 </span>
                                 <button
                                   className="trace-jump-btn"
-                                  onClick={() => navigateToObject(event.targetType, event.targetId)}
+                                  onClick={() => navigateToObject(event.eventType === AUDIT_EVENT_TYPES.MIGRATION ? 'migration' : event.targetType, event.targetId)}
                                   title="跳转到对应模块"
                                 >
                                   <ArrowRight size={12} /> 跳转
