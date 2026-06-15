@@ -643,3 +643,171 @@ export function getAuditStats() {
 export function clearAuditLog() {
   saveAuditLog([]);
 }
+
+export function searchAuditEventsByObject(query) {
+  const log = loadAuditLog();
+  if (!query || !query.trim()) {
+    return { events: [], relatedObjects: {} };
+  }
+  
+  const q = query.trim().toLowerCase();
+  const matchedEventIds = new Set();
+  const relatedObjectIds = {
+    record: new Set(),
+    purchase: new Set(),
+    inventory: new Set(),
+    distribution: new Set(),
+    template: new Set(),
+  };
+  
+  log.forEach((event) => {
+    const metadata = event.metadata || {};
+    const afterData = event.afterData || {};
+    const beforeData = event.beforeData || {};
+    
+    const partName = (metadata.partName || afterData.partName || beforeData.partName || '').toLowerCase();
+    const ship = (metadata.ship || afterData.ship || beforeData.ship || '').toLowerCase();
+    const system = (metadata.system || afterData.system || beforeData.system || '').toLowerCase();
+    
+    if (
+      event.targetId.toLowerCase().includes(q) ||
+      partName.includes(q) ||
+      ship.includes(q) ||
+      system.includes(q) ||
+      (metadata.purchaseId && String(metadata.purchaseId).toLowerCase().includes(q)) ||
+      (metadata.applicationId && String(metadata.applicationId).toLowerCase().includes(q)) ||
+      (metadata.inventoryId && String(metadata.inventoryId).toLowerCase().includes(q))
+    ) {
+      matchedEventIds.add(event.id);
+      
+      if (event.targetType === 'record') {
+        relatedObjectIds.record.add(event.targetId);
+      } else if (event.targetType === 'purchase') {
+        relatedObjectIds.purchase.add(event.targetId);
+      } else if (event.targetType === 'inventory') {
+        relatedObjectIds.inventory.add(event.targetId);
+      } else if (event.targetType === 'distribution') {
+        relatedObjectIds.distribution.add(event.targetId);
+      } else if (event.targetType === 'template') {
+        relatedObjectIds.template.add(event.targetId);
+      }
+      
+      if (metadata.applicationId) {
+        relatedObjectIds.record.add(metadata.applicationId);
+      }
+      if (metadata.purchaseId) {
+        relatedObjectIds.purchase.add(metadata.purchaseId);
+      }
+      if (metadata.inventoryId) {
+        relatedObjectIds.inventory.add(metadata.inventoryId);
+      }
+    }
+  });
+  
+  log.forEach((event) => {
+    if (matchedEventIds.has(event.id)) return;
+    
+    const metadata = event.metadata || {};
+    
+    if (
+      relatedObjectIds.record.has(event.targetId) ||
+      relatedObjectIds.purchase.has(event.targetId) ||
+      relatedObjectIds.inventory.has(event.targetId) ||
+      relatedObjectIds.distribution.has(event.targetId) ||
+      relatedObjectIds.template.has(event.targetId) ||
+      (metadata.applicationId && relatedObjectIds.record.has(metadata.applicationId)) ||
+      (metadata.purchaseId && relatedObjectIds.purchase.has(metadata.purchaseId)) ||
+      (metadata.inventoryId && relatedObjectIds.inventory.has(metadata.inventoryId))
+    ) {
+      matchedEventIds.add(event.id);
+      
+      if (event.targetType === 'record') {
+        relatedObjectIds.record.add(event.targetId);
+      } else if (event.targetType === 'purchase') {
+        relatedObjectIds.purchase.add(event.targetId);
+      } else if (event.targetType === 'inventory') {
+        relatedObjectIds.inventory.add(event.targetId);
+      } else if (event.targetType === 'distribution') {
+        relatedObjectIds.distribution.add(event.targetId);
+      } else if (event.targetType === 'template') {
+        relatedObjectIds.template.add(event.targetId);
+      }
+      
+      if (metadata.applicationId) {
+        relatedObjectIds.record.add(metadata.applicationId);
+      }
+      if (metadata.purchaseId) {
+        relatedObjectIds.purchase.add(metadata.purchaseId);
+      }
+      if (metadata.inventoryId) {
+        relatedObjectIds.inventory.add(metadata.inventoryId);
+      }
+    }
+  });
+  
+  const matchedEvents = log
+    .filter((e) => matchedEventIds.has(e.id))
+    .sort((a, b) => a.timestampMs - b.timestampMs);
+  
+  const relatedObjects = {
+    record: Array.from(relatedObjectIds.record),
+    purchase: Array.from(relatedObjectIds.purchase),
+    inventory: Array.from(relatedObjectIds.inventory),
+    distribution: Array.from(relatedObjectIds.distribution),
+    template: Array.from(relatedObjectIds.template),
+  };
+  
+  return { events: matchedEvents, relatedObjects };
+}
+
+export function getObjectTimeline(targetType, targetId) {
+  const log = loadAuditLog();
+  const relatedEventIds = new Set();
+  const relatedIds = {
+    record: new Set(),
+    purchase: new Set(),
+    inventory: new Set(),
+    distribution: new Set(),
+    template: new Set(),
+  };
+  
+  relatedIds[targetType]?.add(targetId);
+  
+  log.forEach((event) => {
+    const metadata = event.metadata || {};
+    
+    if (event.targetType === targetType && event.targetId === targetId) {
+      relatedEventIds.add(event.id);
+      if (metadata.applicationId) relatedIds.record.add(metadata.applicationId);
+      if (metadata.purchaseId) relatedIds.purchase.add(metadata.purchaseId);
+      if (metadata.inventoryId) relatedIds.inventory.add(metadata.inventoryId);
+      if (metadata.distRecordId) relatedIds.distribution.add(metadata.distRecordId);
+    }
+    
+    if (
+      (metadata.applicationId && relatedIds.record.has(metadata.applicationId)) ||
+      (metadata.purchaseId && relatedIds.purchase.has(metadata.purchaseId)) ||
+      (metadata.inventoryId && relatedIds.inventory.has(metadata.inventoryId))
+    ) {
+      relatedEventIds.add(event.id);
+      if (event.targetType === 'record') relatedIds.record.add(event.targetId);
+      if (event.targetType === 'purchase') relatedIds.purchase.add(event.targetId);
+      if (event.targetType === 'inventory') relatedIds.inventory.add(event.targetId);
+    }
+  });
+  
+  const timeline = log
+    .filter((e) => relatedEventIds.has(e.id))
+    .sort((a, b) => a.timestampMs - b.timestampMs);
+  
+  return {
+    timeline,
+    relatedIds: {
+      record: Array.from(relatedIds.record),
+      purchase: Array.from(relatedIds.purchase),
+      inventory: Array.from(relatedIds.inventory),
+      distribution: Array.from(relatedIds.distribution),
+      template: Array.from(relatedIds.template),
+    },
+  };
+}

@@ -46,6 +46,8 @@ import {
   downloadAuditLogCSV,
   exportAuditLogToCSV,
   setOperator,
+  searchAuditEventsByObject,
+  getObjectTimeline,
 } from './auditMigrationEngine';
 
 const appConfig = {
@@ -864,6 +866,13 @@ function App() {
   const [operatorName, setOperatorName] = useState(() => localStorage.getItem('hxwl-61307-operator') || '当前用户');
   const [showAuditExportModal, setShowAuditExportModal] = useState(false);
   const [expandedAuditEvents, setExpandedAuditEvents] = useState({});
+  const [traceSearchQuery, setTraceSearchQuery] = useState('');
+  const [traceSearchResult, setTraceSearchResult] = useState(null);
+  const [selectedTraceObject, setSelectedTraceObject] = useState(null);
+  const [traceTimeline, setTraceTimeline] = useState(null);
+  const [highlightRecordId, setHighlightRecordId] = useState(null);
+  const [highlightPurchaseId, setHighlightPurchaseId] = useState(null);
+  const [highlightInventoryId, setHighlightInventoryId] = useState(null);
 
   const pendingCount = getPendingOperations().length;
   const unresolvedConflictCount = conflicts.filter((c) => !c.resolved).length;
@@ -1189,6 +1198,62 @@ function App() {
     refreshSyncState();
     addLog('info', '同步系统已重置，已建立新的基线（' + records.length + '条）');
   }, [records, refreshSyncState, addLog]);
+
+  function navigateToObject(targetType, targetId) {
+    setHighlightRecordId(null);
+    setHighlightPurchaseId(null);
+    setHighlightInventoryId(null);
+    
+    switch (targetType) {
+      case 'record':
+        setActiveTab('application');
+        setSelected(records.find(r => r.id === targetId) || null);
+        setHighlightRecordId(targetId);
+        setTimeout(() => setHighlightRecordId(null), 3000);
+        break;
+      case 'purchase':
+        setActiveTab('purchase');
+        setSelectedPurchase(purchases.find(p => p.id === targetId) || null);
+        setHighlightPurchaseId(targetId);
+        setTimeout(() => setHighlightPurchaseId(null), 3000);
+        break;
+      case 'inventory':
+        setActiveTab('inventory');
+        setSelectedInv(inventory.find(i => i.id === targetId) || null);
+        setHighlightInventoryId(targetId);
+        setTimeout(() => setHighlightInventoryId(null), 3000);
+        break;
+      case 'distribution':
+        setActiveTab('distribution');
+        setSelectedDist(distRecords.find(d => d.id === targetId) || null);
+        break;
+      case 'template':
+        setActiveTab('templates');
+        setSelectedTemplate(templates.find(t => t.id === targetId) || null);
+        break;
+      default:
+        break;
+    }
+  }
+
+  function handleTraceSearch() {
+    if (!traceSearchQuery.trim()) {
+      setTraceSearchResult(null);
+      setSelectedTraceObject(null);
+      setTraceTimeline(null);
+      return;
+    }
+    const result = searchAuditEventsByObject(traceSearchQuery);
+    setTraceSearchResult(result);
+    setSelectedTraceObject(null);
+    setTraceTimeline(null);
+  }
+
+  function handleSelectTraceObject(targetType, targetId) {
+    setSelectedTraceObject({ type: targetType, id: targetId });
+    const timelineData = getObjectTimeline(targetType, targetId);
+    setTraceTimeline(timelineData);
+  }
 
   function persist(next) {
     setRecords(next);
@@ -3502,7 +3567,7 @@ function App() {
 
               <div className="records">
                 {filteredRecords.map((item) => (
-                  <article className={'record record-ship ' + (item.conflict || hasOverlap(item, records) ? 'conflict' : '')} key={item.id} onClick={() => setSelected(item)}>
+                  <article className={'record record-ship ' + (item.conflict || hasOverlap(item, records) ? 'conflict' : '') + (highlightRecordId === item.id ? ' record-highlight' : '')} key={item.id} onClick={() => setSelected(item)}>
                     <div className="record-ship-tag">
                       <Ship size={13} />
                       <span>{item.ship}</span>
@@ -4439,7 +4504,7 @@ function App() {
                 {filteredInventory.map((item) => {
                   const low = isLowStock(item);
                   return (
-                    <article className={'record ' + (low ? 'low-stock' : '')} key={item.id} onClick={() => setSelectedInv(item)}>
+                    <article className={'record ' + (low ? 'low-stock' : '') + (highlightInventoryId === item.id ? ' record-highlight' : '')} key={item.id} onClick={() => setSelectedInv(item)}>
                       <div className="record-ship-tag">
                         <Ship size={13} />
                         <span>{item.ship}</span>
@@ -5171,7 +5236,7 @@ function App() {
                   <p className="empty">暂无采购任务。</p>
                 ) : (
                   filteredPurchases.map((item) => (
-                    <article className="record purchase-record" key={item.id} onClick={() => setSelectedPurchase(item)}>
+                    <article className={'record purchase-record' + (highlightPurchaseId === item.id ? ' record-highlight' : '')} key={item.id} onClick={() => setSelectedPurchase(item)}>
                       <div className="record-ship-tag purchase-ship-tag">
                         <Ship size={13} />
                         <span>{item.ship}</span>
@@ -6629,6 +6694,12 @@ function App() {
                 >
                   <Database size={14} /> 迁移与备份
                 </button>
+                <button
+                  className={'audit-sub-tab ' + (auditTab === 'trace' ? 'audit-sub-tab-active' : '')}
+                  onClick={() => setAuditTab('trace')}
+                >
+                  <Activity size={14} /> 对象追踪
+                </button>
               </div>
 
               {auditTab === 'logs' && (
@@ -7008,6 +7079,220 @@ function App() {
                     </div>
                   </div>
                 </div>
+              </section>
+            )}
+
+            {auditTab === 'trace' && (
+              <section className="panel detail-panel">
+                <div className="panel-title">
+                  <Activity size={18} />
+                  <h2>业务对象追踪</h2>
+                </div>
+                <div className="trace-search-bar">
+                  <div className="trace-search-input-wrap">
+                    <Search size={18} />
+                    <input
+                      type="text"
+                      value={traceSearchQuery}
+                      onChange={(e) => setTraceSearchQuery(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleTraceSearch(); }}
+                      placeholder="输入申请ID、采购ID或备件名称进行搜索..."
+                      className="trace-search-input"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="primary trace-search-btn"
+                    onClick={handleTraceSearch}
+                  >
+                    <Search size={16} /> 搜索
+                  </button>
+                </div>
+
+                {traceSearchResult && !selectedTraceObject && (
+                  <div className="trace-search-results">
+                    <h3>搜索结果</h3>
+                    {traceSearchResult.events.length === 0 ? (
+                      <p className="empty">未找到相关的审计记录</p>
+                    ) : (
+                      <>
+                        <p className="trace-result-summary">
+                          共找到 <strong>{traceSearchResult.events.length}</strong> 条相关事件，涉及：
+                        </p>
+                        <div className="trace-related-objects">
+                          {traceSearchResult.relatedObjects.record?.length > 0 && (
+                            <div className="trace-object-group">
+                              <h4>
+                                <ListTodo size={14} /> 备件申请 ({traceSearchResult.relatedObjects.record.length})
+                              </h4>
+                              <div className="trace-object-list">
+                                {traceSearchResult.relatedObjects.record.map((id) => {
+                                  const rec = records.find(r => r.id === id);
+                                  return (
+                                    <button
+                                      key={id}
+                                      className="trace-object-item"
+                                      onClick={() => handleSelectTraceObject('record', id)}
+                                    >
+                                      <span className="trace-object-name">
+                                        {rec?.partName || '未知备件'}
+                                      </span>
+                                      <span className="trace-object-id">#{id.slice(0, 10)}</span>
+                                      {rec && <span className="trace-object-meta">{rec.ship} · {rec.status}</span>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                          {traceSearchResult.relatedObjects.purchase?.length > 0 && (
+                            <div className="trace-object-group">
+                              <h4>
+                                <ShoppingCart size={14} /> 采购任务 ({traceSearchResult.relatedObjects.purchase.length})
+                              </h4>
+                              <div className="trace-object-list">
+                                {traceSearchResult.relatedObjects.purchase.map((id) => {
+                                  const pur = purchases.find(p => p.id === id);
+                                  return (
+                                    <button
+                                      key={id}
+                                      className="trace-object-item"
+                                      onClick={() => handleSelectTraceObject('purchase', id)}
+                                    >
+                                      <span className="trace-object-name">
+                                        {pur?.partName || '未知采购'}
+                                      </span>
+                                      <span className="trace-object-id">#{id.slice(0, 10)}</span>
+                                      {pur && <span className="trace-object-meta">{pur.status} · {pur.purchaseQty}件</span>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                          {traceSearchResult.relatedObjects.inventory?.length > 0 && (
+                            <div className="trace-object-group">
+                              <h4>
+                                <Package size={14} /> 库存记录 ({traceSearchResult.relatedObjects.inventory.length})
+                              </h4>
+                              <div className="trace-object-list">
+                                {traceSearchResult.relatedObjects.inventory.map((id) => {
+                                  const inv = inventory.find(i => i.id === id);
+                                  return (
+                                    <button
+                                      key={id}
+                                      className="trace-object-item"
+                                      onClick={() => handleSelectTraceObject('inventory', id)}
+                                    >
+                                      <span className="trace-object-name">
+                                        {inv?.partName || '未知库存'}
+                                      </span>
+                                      <span className="trace-object-id">#{id.slice(0, 10)}</span>
+                                      {inv && <span className="trace-object-meta">{inv.ship} · 库存{inv.currentStock}</span>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {selectedTraceObject && traceTimeline && (
+                  <div className="trace-timeline-view">
+                    <div className="trace-timeline-header">
+                      <button
+                        className="trace-back-btn"
+                        onClick={() => { setSelectedTraceObject(null); setTraceTimeline(null); }}
+                      >
+                        <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /> 返回搜索结果
+                      </button>
+                      <div className="trace-timeline-title">
+                        <h3>
+                          {selectedTraceObject.type === 'record' ? '备件申请' :
+                           selectedTraceObject.type === 'purchase' ? '采购任务' :
+                           selectedTraceObject.type === 'inventory' ? '库存记录' :
+                           selectedTraceObject.type} 时间线
+                        </h3>
+                        <span className="trace-timeline-id">#{selectedTraceObject.id.slice(0, 12)}</span>
+                      </div>
+                    </div>
+
+                    {traceTimeline.timeline.length === 0 ? (
+                      <p className="empty">暂无时间线记录</p>
+                    ) : (
+                      <div className="trace-timeline">
+                        {traceTimeline.timeline.map((event, index) => (
+                          <div key={event.id} className="trace-timeline-item">
+                            <div className="trace-timeline-marker">
+                              <div className="trace-timeline-dot" />
+                              {index < traceTimeline.timeline.length - 1 && <div className="trace-timeline-line" />}
+                            </div>
+                            <div className="trace-timeline-content">
+                              <div className="trace-timeline-event-header">
+                                <span className={'trace-event-type trace-event-type-' + event.eventType}>
+                                  {AUDIT_EVENT_LABELS[event.eventType] || event.eventType}
+                                </span>
+                                <span className="trace-event-target">
+                                  {event.targetType === 'record' ? '申请' :
+                                   event.targetType === 'purchase' ? '采购' :
+                                   event.targetType === 'inventory' ? '库存' :
+                                   event.targetType === 'distribution' ? '发放' :
+                                   event.targetType === 'template' ? '模板' : event.targetType}
+                                  :{event.targetId.slice(0, 8)}
+                                </span>
+                                <button
+                                  className="trace-jump-btn"
+                                  onClick={() => navigateToObject(event.targetType, event.targetId)}
+                                  title="跳转到对应模块"
+                                >
+                                  <ArrowRight size={12} /> 跳转
+                                </button>
+                              </div>
+                              <div className="trace-timeline-meta">
+                                <span className="trace-event-operator">
+                                  <UserCheck size={12} /> {event.operator || '系统'}
+                                </span>
+                                <span className="trace-event-time">
+                                  <Clock size={12} /> {new Date(event.timestampMs).toLocaleString('zh-CN')}
+                                </span>
+                              </div>
+                              {event.metadata && Object.keys(event.metadata).length > 0 && (
+                                <div className="trace-event-metadata">
+                                  {Object.entries(event.metadata).map(([k, v]) => (
+                                    <span key={k} className="trace-meta-tag">
+                                      {k}: {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                                    </span>
+                                  )).slice(0, 6)}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {!traceSearchResult && !selectedTraceObject && (
+                  <div className="trace-empty-state">
+                    <Activity size={48} />
+                    <h3>按业务对象追踪审计记录</h3>
+                    <p>输入申请ID、采购ID或备件名称，查看该对象的完整生命周期时间线</p>
+                    <div className="trace-tips">
+                      <h4>支持的搜索方式：</h4>
+                      <ul>
+                        <li><strong>申请ID</strong> - 例如：abc123def4</li>
+                        <li><strong>采购ID</strong> - 例如：xyz789abc1</li>
+                        <li><strong>备件名称</strong> - 例如：海水泵密封圈</li>
+                        <li><strong>船舶名称</strong> - 例如：远洋一号</li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
               </section>
             )}
           </section>
