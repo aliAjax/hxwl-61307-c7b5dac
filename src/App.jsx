@@ -3369,10 +3369,6 @@ function App() {
     return Math.ceil((d2 - d1) / (1000 * 60 * 60 * 24));
   }
 
-  function getPurchasesByApplicationId(appId) {
-    return purchases.filter(p => p.applicationId === appId);
-  }
-
   const guaranteeRiskList = useMemo(() => {
     const risks = [];
     let riskIdCounter = 0;
@@ -3461,15 +3457,22 @@ function App() {
       const gapQty = Math.max(requiredQty - currentStock, 0);
       const hasPurchase = getPurchasesByApplicationId(app.id).some(p => p.status !== '已到货');
 
-      if (gapQty > 0 || !inv || hasPurchase === false) {
+      const canDispatch = !hasPurchase && gapQty === 0 && !!inv;
+      if (gapQty > 0 || !inv || canDispatch) {
         let riskDate = '';
         const leadDays = guaranteeConfig.leadTimeDays[app.urgency === '高' ? '高' : app.urgency === '中' ? '中' : '低'] || 14;
         riskDate = addDays(today, Math.max(1, leadDays - 3));
 
         const riskLevel = app.urgency === '高' ? '紧急' : app.urgency === '中' ? '高' : '中';
+        const displayQty = canDispatch ? requiredQty : gapQty;
         let basis = `申请${app.qty}件，已批准${app.approvedQty || app.qty}件`;
         if (inv) {
-          basis += `，当前库存${currentStock}件，缺口${gapQty}件`;
+          basis += `，当前库存${currentStock}件`;
+          if (canDispatch) {
+            basis += `，待发放${requiredQty}件`;
+          } else if (gapQty > 0) {
+            basis += `，缺口${gapQty}件`;
+          }
         } else {
           basis += `，无库存记录`;
         }
@@ -3489,7 +3492,7 @@ function App() {
           system: app.system,
           partName: app.partName,
           location: app.location,
-          gapQty: gapQty || requiredQty,
+          gapQty: displayQty,
           riskDate,
           riskLevel,
           urgency: app.urgency,
@@ -3711,9 +3714,22 @@ function App() {
           setSelected(null);
         }
         break;
+      case 'dispatch':
+        if (risk.applicationId) {
+          const app = records.find(r => r.id === risk.applicationId);
+          if (app) {
+            setDistForm({
+              ...distConfig.defaultValues,
+              applicationId: app.id,
+              distQty: String(app.approvedQty || app.qty),
+            });
+            setSelected(null);
+            setActiveTab('distribution');
+          }
+        }
+        break;
       case 'approve':
       case 'view_purchase':
-      case 'dispatch':
       case 'expedite_purchase':
       case 'monitor_purchase':
         if (risk.sourceKey === 'purchase' && risk.purchaseId) {
