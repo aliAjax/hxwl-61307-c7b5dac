@@ -299,40 +299,41 @@ export function buildRelationIndex({ records, purchases, distributions, inventor
     syncQueue.forEach((op) => {
       if (op?.id) {
         index.byId[op.id] = { type: 'syncOp', data: { objectType: op.objectType, opType: op.type, synced: op.synced } };
-        if (op.objectId) {
+        const objectId = op.objectId || op.targetId;
+        if (objectId) {
           if (!index.syncOpToObjects[op.id]) index.syncOpToObjects[op.id] = [];
-          if (!index.syncOpToObjects[op.id].includes(op.objectId)) {
-            index.syncOpToObjects[op.id].push(op.objectId);
+          if (!index.syncOpToObjects[op.id].includes(objectId)) {
+            index.syncOpToObjects[op.id].push(objectId);
           }
           switch (op.objectType) {
             case 'application':
-              if (!index.applicationSyncOps[op.objectId]) index.applicationSyncOps[op.objectId] = [];
-              if (!index.applicationSyncOps[op.objectId].includes(op.id)) {
-                index.applicationSyncOps[op.objectId].push(op.id);
+              if (!index.applicationSyncOps[objectId]) index.applicationSyncOps[objectId] = [];
+              if (!index.applicationSyncOps[objectId].includes(op.id)) {
+                index.applicationSyncOps[objectId].push(op.id);
               }
               break;
             case 'template':
-              if (!index.templateSyncOps[op.objectId]) index.templateSyncOps[op.objectId] = [];
-              if (!index.templateSyncOps[op.objectId].includes(op.id)) {
-                index.templateSyncOps[op.objectId].push(op.id);
+              if (!index.templateSyncOps[objectId]) index.templateSyncOps[objectId] = [];
+              if (!index.templateSyncOps[objectId].includes(op.id)) {
+                index.templateSyncOps[objectId].push(op.id);
               }
               break;
             case 'purchase':
-              if (!index.purchaseSyncOps[op.objectId]) index.purchaseSyncOps[op.objectId] = [];
-              if (!index.purchaseSyncOps[op.objectId].includes(op.id)) {
-                index.purchaseSyncOps[op.objectId].push(op.id);
+              if (!index.purchaseSyncOps[objectId]) index.purchaseSyncOps[objectId] = [];
+              if (!index.purchaseSyncOps[objectId].includes(op.id)) {
+                index.purchaseSyncOps[objectId].push(op.id);
               }
               break;
             case 'inventory':
-              if (!index.inventorySyncOps[op.objectId]) index.inventorySyncOps[op.objectId] = [];
-              if (!index.inventorySyncOps[op.objectId].includes(op.id)) {
-                index.inventorySyncOps[op.objectId].push(op.id);
+              if (!index.inventorySyncOps[objectId]) index.inventorySyncOps[objectId] = [];
+              if (!index.inventorySyncOps[objectId].includes(op.id)) {
+                index.inventorySyncOps[objectId].push(op.id);
               }
               break;
             case 'distribution':
-              if (!index.distributionSyncOps[op.objectId]) index.distributionSyncOps[op.objectId] = [];
-              if (!index.distributionSyncOps[op.objectId].includes(op.id)) {
-                index.distributionSyncOps[op.objectId].push(op.id);
+              if (!index.distributionSyncOps[objectId]) index.distributionSyncOps[objectId] = [];
+              if (!index.distributionSyncOps[objectId].includes(op.id)) {
+                index.distributionSyncOps[objectId].push(op.id);
               }
               break;
           }
