@@ -1,5 +1,5 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, PackagePlus, MinusCircle, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download, Wifi, WifiOff, Database, Cloud, CloudOff, AlertOctagon, ChevronDown, ChevronRight, Server, UserX, Layers, Activity, Save, RotateCcw, Hand, Wrench } from 'lucide-react';
+import { Ship, Plus, Search, Trash2, AlertTriangle, ClipboardList, CalendarDays, CheckCircle2, Package, PackagePlus, MinusCircle, ListTodo, Truck, UserCheck, FileText, Bookmark, ArrowRightLeft, Gavel, CheckCircle, XCircle, MessageSquare, Edit3, Clock, Shield, Lock, ShoppingCart, Factory, ArrowRight, RefreshCw, BarChart3, TrendingUp, PieChart, Zap, Upload, FileSpreadsheet, X, Info, Copy, Download, Wifi, WifiOff, Database, Cloud, CloudOff, AlertOctagon, ChevronDown, ChevronRight, Server, UserX, Layers, Activity, Save, RotateCcw, Hand, Wrench, Lightbulb } from 'lucide-react';
 import './App.css';
 import {
   OP_TYPES,
@@ -396,6 +396,16 @@ const trendConfig = {
   topN: 10
 };
 
+const guaranteeConfig = {
+  title: "备件保障计划",
+  subtitle: "整合趋势分析、库存安全线、已批未发、采购在途与高紧急待审，生成未来风险清单并给出处置建议",
+  domain: "保障计划",
+  accent: "#c026d3",
+  riskLevels: ["紧急", "高", "中", "低"],
+  avgConsumptionDays: 30,
+  leadTimeDays: { 紧急: 3, 高: 7, 中: 14, 低: 30 }
+};
+
 const today = new Date().toISOString().slice(0, 10);
 
 function uid() {
@@ -624,6 +634,12 @@ function App() {
 
   const [trendDateRange, setTrendDateRange] = useState({ start: '', end: '' });
   const [trendSystemFilter, setTrendSystemFilter] = useState('全部');
+
+  const [guaranteeShipFilter, setGuaranteeShipFilter] = useState('全部');
+  const [guaranteeSystemFilter, setGuaranteeSystemFilter] = useState('全部');
+  const [guaranteeRiskFilter, setGuaranteeRiskFilter] = useState('全部');
+  const [guaranteeSourceFilter, setGuaranteeSourceFilter] = useState('全部');
+  const [selectedGuaranteeRisk, setSelectedGuaranteeRisk] = useState(null);
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [importType, setImportType] = useState('application');
@@ -3341,16 +3357,407 @@ function App() {
       }));
   }, [trendFilteredRecords]);
 
+  function addDays(dateStr, days) {
+    const d = new Date(dateStr);
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  function daysBetween(dateStr1, dateStr2) {
+    const d1 = new Date(dateStr1);
+    const d2 = new Date(dateStr2);
+    return Math.ceil((d2 - d1) / (1000 * 60 * 60 * 24));
+  }
+
+  function getPurchasesByApplicationId(appId) {
+    return purchases.filter(p => p.applicationId === appId);
+  }
+
+  const guaranteeRiskList = useMemo(() => {
+    const risks = [];
+    let riskIdCounter = 0;
+
+    const partUsageStats = {};
+    records.forEach(r => {
+      const key = `${r.ship}||${r.system}||${r.partName}||${r.location}`;
+      if (!partUsageStats[key]) {
+        partUsageStats[key] = { ship: r.ship, system: r.system, partName: r.partName, location: r.location, count: 0, totalQty: 0, lastDate: null };
+      }
+      partUsageStats[key].count += 1;
+      partUsageStats[key].totalQty += Number(r.qty) || 0;
+      if (r.createdAt) {
+        const d = r.createdAt.slice(0, 10);
+        if (!partUsageStats[key].lastDate || d > partUsageStats[key].lastDate) {
+          partUsageStats[key].lastDate = d;
+        }
+      }
+    });
+
+    inventory.forEach(inv => {
+      const current = Number(inv.currentStock) || 0;
+      const safety = Number(inv.safetyStock) || 0;
+      const key = `${inv.ship}||${inv.system}||${inv.partName}||${inv.location}`;
+      const usage = partUsageStats[key];
+
+      if (current < safety || (usage && usage.count >= 2)) {
+        const gapQty = Math.max(safety - current, 0);
+        let avgDailyUse = 0;
+        let riskDate = '';
+        let basis = '';
+
+        if (usage && usage.lastDate) {
+          const daysSinceLast = Math.max(daysBetween(usage.lastDate, today), 1);
+          avgDailyUse = usage.totalQty / Math.max(daysSinceLast, guaranteeConfig.avgConsumptionDays);
+        } else {
+          avgDailyUse = safety / guaranteeConfig.avgConsumptionDays;
+        }
+
+        if (avgDailyUse > 0 && current > 0) {
+          const daysToDeplete = Math.floor(current / avgDailyUse);
+          riskDate = addDays(today, daysToDeplete);
+        } else if (current === 0) {
+          riskDate = today;
+        } else {
+          riskDate = addDays(today, guaranteeConfig.avgConsumptionDays);
+        }
+
+        const urgency = inv.urgency || (current === 0 ? '高' : gapQty > safety * 0.5 ? '高' : '中');
+        const riskLevel = current === 0 ? '紧急' : gapQty > safety * 0.5 ? '高' : current < safety ? '中' : '低';
+
+        basis = `当前库存${current}件，安全库存${safety}件`;
+        if (usage) {
+          basis += `，历史${usage.count}次申请共${usage.totalQty}件，日均消耗约${avgDailyUse.toFixed(2)}件`;
+        }
+        if (inv.lastCheckDate) {
+          basis += `，最后盘点${inv.lastCheckDate}`;
+        }
+
+        risks.push({
+          id: `risk_inv_${riskIdCounter++}`,
+          source: '库存安全线',
+          sourceKey: 'inventory',
+          ship: inv.ship,
+          system: inv.system,
+          partName: inv.partName,
+          location: inv.location,
+          gapQty: gapQty || Math.max(1, Math.ceil(safety * 0.3)),
+          riskDate,
+          riskLevel,
+          urgency,
+          suggestedAction: gapQty > 0 ? 'create_application' : 'monitor',
+          suggestedActionLabel: gapQty > 0 ? '创建补货申请' : '持续监控',
+          basis,
+          inventoryId: inv.id,
+          inventoryData: inv,
+        });
+      }
+    });
+
+    const approvedNotDispatched = records.filter(r => r.status === '已批准' && !wasDispatched(r));
+    approvedNotDispatched.forEach(app => {
+      const inv = findInventoryItem(app);
+      const requiredQty = Number(app.approvedQty || app.qty) || 0;
+      const currentStock = inv ? Number(inv.currentStock) || 0 : 0;
+      const gapQty = Math.max(requiredQty - currentStock, 0);
+      const hasPurchase = getPurchasesByApplicationId(app.id).some(p => p.status !== '已到货');
+
+      if (gapQty > 0 || !inv || hasPurchase === false) {
+        let riskDate = '';
+        const leadDays = guaranteeConfig.leadTimeDays[app.urgency === '高' ? '高' : app.urgency === '中' ? '中' : '低'] || 14;
+        riskDate = addDays(today, Math.max(1, leadDays - 3));
+
+        const riskLevel = app.urgency === '高' ? '紧急' : app.urgency === '中' ? '高' : '中';
+        let basis = `申请${app.qty}件，已批准${app.approvedQty || app.qty}件`;
+        if (inv) {
+          basis += `，当前库存${currentStock}件，缺口${gapQty}件`;
+        } else {
+          basis += `，无库存记录`;
+        }
+        if (hasPurchase) {
+          basis += '，存在未完成采购';
+        }
+        if (app.reason) {
+          basis += `，申请原因：${app.reason}`;
+        }
+
+        const activePurchases = getPurchasesByApplicationId(app.id).filter(p => p.status !== '已到货');
+        risks.push({
+          id: `risk_appr_${riskIdCounter++}`,
+          source: '已批准未发放',
+          sourceKey: 'approved',
+          ship: app.ship,
+          system: app.system,
+          partName: app.partName,
+          location: app.location,
+          gapQty: gapQty || requiredQty,
+          riskDate,
+          riskLevel,
+          urgency: app.urgency,
+          suggestedAction: hasPurchase ? 'view_purchase' : gapQty > 0 ? 'create_purchase' : 'dispatch',
+          suggestedActionLabel: hasPurchase ? '查看采购进度' : gapQty > 0 ? '创建采购任务' : '直接发放',
+          basis,
+          applicationId: app.id,
+          applicationData: app,
+          purchaseIds: activePurchases.map(p => p.id),
+        });
+      }
+    });
+
+    const inTransitPurchases = purchases.filter(p => p.status === '已下单' || p.status === '运输中');
+    inTransitPurchases.forEach(p => {
+      const overdue = p.etaDate && isOverdue(p.etaDate);
+      const daysToEta = p.etaDate ? daysBetween(today, p.etaDate) : null;
+
+      let riskLevel = '低';
+      if (overdue) riskLevel = p.urgency === '高' ? '紧急' : '高';
+      else if (daysToEta !== null && daysToEta <= 3) riskLevel = p.urgency === '高' ? '高' : '中';
+      else if (p.urgency === '高') riskLevel = '中';
+
+      const riskDate = p.etaDate || addDays(today, 14);
+      let basis = `采购${p.purchaseQty}件，状态：${p.status}`;
+      if (p.supplier) basis += `，供应商：${p.supplier}`;
+      if (p.etaDate) basis += `，预计到港${p.etaDate}`;
+      if (overdue) basis += `，已逾期${Math.abs(daysToEta || 0)}天`;
+      else if (daysToEta !== null) basis += `，剩余${daysToEta}天`;
+      if (p.purchaseNote) basis += `，备注：${p.purchaseNote}`;
+
+      risks.push({
+        id: `risk_pur_${riskIdCounter++}`,
+        source: '采购在途',
+        sourceKey: 'purchase',
+        ship: p.ship,
+        system: p.system,
+        partName: p.partName,
+        location: p.location,
+        gapQty: Number(p.purchaseQty) || 0,
+        riskDate,
+        riskLevel,
+        urgency: p.urgency || '中',
+        suggestedAction: overdue ? 'expedite_purchase' : 'monitor_purchase',
+        suggestedActionLabel: overdue ? '催办并查看详情' : '查看采购进度',
+        basis,
+        purchaseId: p.id,
+        purchaseData: p,
+        applicationId: p.applicationId,
+      });
+    });
+
+    const urgentPending = records.filter(r => r.status === '待审批' && r.urgency === '高' && !wasDispatched(r));
+    urgentPending.forEach(app => {
+      const inv = findInventoryItem(app);
+      const requiredQty = Number(app.qty) || 0;
+      const currentStock = inv ? Number(inv.currentStock) || 0 : 0;
+      const gapQty = Math.max(requiredQty - currentStock, 0);
+
+      const leadDays = guaranteeConfig.leadTimeDays['紧急'] || 3;
+      const riskDate = addDays(today, 1);
+
+      let basis = `高紧急待审，需求${app.qty}件`;
+      if (inv) {
+        basis += `，当前库存${currentStock}件`;
+        if (gapQty > 0) basis += `，预计缺口${gapQty}件`;
+      } else {
+        basis += '，无库存记录';
+      }
+      if (app.reason) basis += `，原因：${app.reason}`;
+
+      risks.push({
+        id: `risk_urg_${riskIdCounter++}`,
+        source: '高紧急待审',
+        sourceKey: 'urgent',
+        ship: app.ship,
+        system: app.system,
+        partName: app.partName,
+        location: app.location,
+        gapQty: requiredQty,
+        riskDate,
+        riskLevel: '紧急',
+        urgency: '高',
+        suggestedAction: 'approve',
+        suggestedActionLabel: '立即审批',
+        basis,
+        applicationId: app.id,
+        applicationData: app,
+      });
+    });
+
+    const trendParts = {};
+    records.forEach(r => {
+      const key = `${r.ship}||${r.system}||${r.partName}||${r.location}`;
+      if (!trendParts[key]) trendParts[key] = [];
+      trendParts[key].push(r);
+    });
+
+    Object.entries(trendParts).forEach(([key, list]) => {
+      if (list.length >= 3) {
+        const sample = list[0];
+        const inv = inventory.find(i =>
+          i.ship === sample.ship && i.system === sample.system &&
+          i.partName === sample.partName && i.location === sample.location
+        );
+        const currentStock = inv ? Number(inv.currentStock) || 0 : 0;
+        const safetyStock = inv ? Number(inv.safetyStock) || 0 : 0;
+        const totalQty = list.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+        const avgQty = Math.ceil(totalQty / list.length);
+        const projectNextMonth = Math.ceil(avgQty * 1.2);
+
+        if (!inv || currentStock < safetyStock + projectNextMonth) {
+          const gapQty = Math.max((safetyStock + projectNextMonth) - currentStock, 1);
+          const riskDate = addDays(today, guaranteeConfig.avgConsumptionDays);
+          const highCount = list.filter(r => r.urgency === '高').length;
+
+          risks.push({
+            id: `risk_trend_${riskIdCounter++}`,
+            source: '趋势分析',
+            sourceKey: 'trend',
+            ship: sample.ship,
+            system: sample.system,
+            partName: sample.partName,
+            location: sample.location,
+            gapQty,
+            riskDate,
+            riskLevel: highCount >= 2 ? '高' : '中',
+            urgency: highCount >= 2 ? '高' : '中',
+            suggestedAction: 'create_application',
+            suggestedActionLabel: '预防性申请补货',
+            basis: `近${list.length}次申请共${totalQty}件，平均每次${avgQty}件，其中${highCount}次为高紧急，预测下月需求约${projectNextMonth}件`,
+            inventoryId: inv?.id,
+            inventoryData: inv,
+          });
+        }
+      }
+    });
+
+    return risks.sort((a, b) => {
+      const levelRank = { 紧急: 0, 高: 1, 中: 2, 低: 3 };
+      if (levelRank[a.riskLevel] !== levelRank[b.riskLevel]) {
+        return levelRank[a.riskLevel] - levelRank[b.riskLevel];
+      }
+      if (a.riskDate && b.riskDate) return a.riskDate.localeCompare(b.riskDate);
+      return b.gapQty - a.gapQty;
+    });
+  }, [records, inventory, purchases, today]);
+
+  const filteredGuaranteeRisks = useMemo(() => {
+    return guaranteeRiskList.filter(r => {
+      if (guaranteeShipFilter !== '全部' && r.ship !== guaranteeShipFilter) return false;
+      if (guaranteeSystemFilter !== '全部' && r.system !== guaranteeSystemFilter) return false;
+      if (guaranteeRiskFilter !== '全部' && r.riskLevel !== guaranteeRiskFilter) return false;
+      if (guaranteeSourceFilter !== '全部' && r.source !== guaranteeSourceFilter) return false;
+      return true;
+    });
+  }, [guaranteeRiskList, guaranteeShipFilter, guaranteeSystemFilter, guaranteeRiskFilter, guaranteeSourceFilter]);
+
+  const guaranteeMetrics = useMemo(() => {
+    const total = guaranteeRiskList.length;
+    const urgent = guaranteeRiskList.filter(r => r.riskLevel === '紧急').length;
+    const high = guaranteeRiskList.filter(r => r.riskLevel === '高').length;
+    const medium = guaranteeRiskList.filter(r => r.riskLevel === '中').length;
+    const ships = new Set(guaranteeRiskList.map(r => r.ship)).size;
+    return [
+      { label: '风险项总数', value: total },
+      { label: '紧急风险', value: urgent, highlight: urgent > 0 },
+      { label: '高风险', value: high },
+      { label: '中风险', value: medium },
+      { label: '涉及船舶', value: ships },
+    ];
+  }, [guaranteeRiskList]);
+
+  function handleGuaranteeAction(risk) {
+    switch (risk.suggestedAction) {
+      case 'create_application':
+        setForm({
+          ...appConfig.defaultValues,
+          ship: risk.ship,
+          partName: risk.partName,
+          system: risk.system,
+          location: risk.location,
+          qty: String(risk.gapQty || 1),
+          urgency: risk.urgency || '中',
+          reason: `[保障计划建议] ${risk.basis}，建议补货${risk.gapQty || 1}件`,
+          status: '待审批',
+        });
+        setSelectedApplyTemplate('');
+        setActiveTab('application');
+        setSelected(null);
+        break;
+      case 'create_purchase':
+        if (risk.applicationId) {
+          const app = records.find(r => r.id === risk.applicationId);
+          if (app) {
+            setPurchaseForm({
+              ...purchaseConfig.defaultValues,
+              applicationId: app.id,
+              purchaseQty: app.approvedQty || app.qty,
+            });
+            setShowCreatePurchaseFromApp(true);
+            setSelected(app);
+            setActiveTab('application');
+          }
+        } else {
+          setForm({
+            ...appConfig.defaultValues,
+            ship: risk.ship,
+            partName: risk.partName,
+            system: risk.system,
+            location: risk.location,
+            qty: String(risk.gapQty || 1),
+            urgency: risk.urgency || '中',
+            reason: `[保障计划建议] ${risk.basis}`,
+            status: '已批准',
+          });
+          setSelectedApplyTemplate('');
+          setActiveTab('application');
+          setSelected(null);
+        }
+        break;
+      case 'approve':
+      case 'view_purchase':
+      case 'dispatch':
+      case 'expedite_purchase':
+      case 'monitor_purchase':
+        if (risk.sourceKey === 'purchase' && risk.purchaseId) {
+          const p = purchases.find(x => x.id === risk.purchaseId);
+          if (p) {
+            setSelectedPurchase(p);
+            setActiveTab('purchase');
+          }
+        } else if (risk.applicationId) {
+          setSelectedApproval(records.find(r => r.id === risk.applicationId) || null);
+          setApprovalQty('');
+          setApprovalComment('');
+          setApprovalError('');
+          if (risk.sourceKey === 'urgent') {
+            setApprovalSubTab('urgent');
+          } else {
+            setApprovalSubTab('normal');
+          }
+          setActiveTab('approval');
+        } else if (risk.inventoryId) {
+          setSelectedInv(inventory.find(i => i.id === risk.inventoryId) || null);
+          setActiveTab('inventory');
+        }
+        break;
+      case 'monitor':
+      default:
+        if (risk.inventoryId) {
+          setSelectedInv(inventory.find(i => i.id === risk.inventoryId) || null);
+          setActiveTab('inventory');
+        }
+        break;
+    }
+  }
+
   return (
-    <main className="shell" style={{ '--accent': activeTab === 'approval' ? '#ea580c' : activeTab === 'inventory' ? inventoryConfig.accent : activeTab === 'distribution' ? distConfig.accent : activeTab === 'templates' ? templateConfig.accent : activeTab === 'purchase' ? purchaseConfig.accent : activeTab === 'trend' ? trendConfig.accent : appConfig.accent }}>
+    <main className="shell" style={{ '--accent': activeTab === 'approval' ? '#ea580c' : activeTab === 'inventory' ? inventoryConfig.accent : activeTab === 'distribution' ? distConfig.accent : activeTab === 'templates' ? templateConfig.accent : activeTab === 'purchase' ? purchaseConfig.accent : activeTab === 'trend' ? trendConfig.accent : activeTab === 'guarantee' ? guaranteeConfig.accent : appConfig.accent }}>
       <section className="hero">
         <div>
           <div className="eyebrow">
-            {activeTab === 'approval' ? <Gavel size={18} /> : activeTab === 'purchase' ? <ShoppingCart size={18} /> : activeTab === 'trend' ? <BarChart3 size={18} /> : <Ship size={18} />}
-            {activeTab === 'approval' ? '审批管理' : activeTab === 'inventory' ? inventoryConfig.domain : activeTab === 'distribution' ? distConfig.domain : activeTab === 'templates' ? templateConfig.domain : activeTab === 'purchase' ? purchaseConfig.domain : activeTab === 'trend' ? trendConfig.domain : appConfig.domain}
+            {activeTab === 'approval' ? <Gavel size={18} /> : activeTab === 'purchase' ? <ShoppingCart size={18} /> : activeTab === 'trend' ? <BarChart3 size={18} /> : activeTab === 'guarantee' ? <Shield size={18} /> : <Ship size={18} />}
+            {activeTab === 'approval' ? '审批管理' : activeTab === 'inventory' ? inventoryConfig.domain : activeTab === 'distribution' ? distConfig.domain : activeTab === 'templates' ? templateConfig.domain : activeTab === 'purchase' ? purchaseConfig.domain : activeTab === 'trend' ? trendConfig.domain : activeTab === 'guarantee' ? guaranteeConfig.domain : appConfig.domain}
           </div>
-          <h1>{activeTab === 'approval' ? '审批工作台' : activeTab === 'inventory' ? inventoryConfig.title : activeTab === 'distribution' ? distConfig.title : activeTab === 'templates' ? templateConfig.title : activeTab === 'purchase' ? purchaseConfig.title : activeTab === 'trend' ? trendConfig.title : appConfig.title}</h1>
-          <p>{activeTab === 'approval' ? '集中处理待审批备件申请，支持批准、驳回与调整批准数量' : activeTab === 'inventory' ? inventoryConfig.subtitle : activeTab === 'distribution' ? distConfig.subtitle : activeTab === 'templates' ? templateConfig.subtitle : activeTab === 'purchase' ? purchaseConfig.subtitle : activeTab === 'trend' ? trendConfig.subtitle : appConfig.subtitle}</p>
+          <h1>{activeTab === 'approval' ? '审批工作台' : activeTab === 'inventory' ? inventoryConfig.title : activeTab === 'distribution' ? distConfig.title : activeTab === 'templates' ? templateConfig.title : activeTab === 'purchase' ? purchaseConfig.title : activeTab === 'trend' ? trendConfig.title : activeTab === 'guarantee' ? guaranteeConfig.title : appConfig.title}</h1>
+          <p>{activeTab === 'approval' ? '集中处理待审批备件申请，支持批准、驳回与调整批准数量' : activeTab === 'inventory' ? inventoryConfig.subtitle : activeTab === 'distribution' ? distConfig.subtitle : activeTab === 'templates' ? templateConfig.subtitle : activeTab === 'purchase' ? purchaseConfig.subtitle : activeTab === 'trend' ? trendConfig.subtitle : activeTab === 'guarantee' ? guaranteeConfig.subtitle : appConfig.subtitle}</p>
         </div>
         <div className="port-card">
           <span>Local Port</span>
@@ -3407,6 +3814,13 @@ function App() {
         >
           <BarChart3 size={16} />
           需求趋势
+        </button>
+        <button
+          className={'tab ' + (activeTab === 'guarantee' ? 'tab-active' : '')}
+          onClick={() => setActiveTab('guarantee')}
+        >
+          <Shield size={16} />
+          备件保障计划
         </button>
         <button
           className={'tab ' + (activeTab === 'sync' ? 'tab-active' : '')}
@@ -5756,6 +6170,382 @@ function App() {
                 </div>
               )}
             </div>
+          </section>
+        </>
+      )}
+
+      {activeTab === 'guarantee' && (
+        <>
+          <section className="metrics">
+            {guaranteeMetrics.map((metric) => (
+              <article className="metric" key={metric.label}>
+                <span>{metric.label}</span>
+                <strong style={metric.highlight ? { color: '#dc2626' } : {}}>{metric.value}</strong>
+              </article>
+            ))}
+          </section>
+
+          <section className="panel trend-filter-panel">
+            <div className="panel-title">
+              <Wrench size={18} />
+              <h2>风险筛选</h2>
+            </div>
+            <div className="trend-filter-row">
+              <div className="trend-filter-item">
+                <label>所属船舶</label>
+                <select
+                  value={guaranteeShipFilter}
+                  onChange={(e) => setGuaranteeShipFilter(e.target.value)}
+                >
+                  <option value="全部">全部船舶</option>
+                  {appConfig.ships.map((ship) => (
+                    <option key={ship} value={ship}>{ship}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="trend-filter-item">
+                <label>设备系统</label>
+                <select
+                  value={guaranteeSystemFilter}
+                  onChange={(e) => setGuaranteeSystemFilter(e.target.value)}
+                >
+                  <option value="全部">全部系统</option>
+                  {appConfig.fields.find(f => f.key === 'system')?.options.map((sys) => (
+                    <option key={sys} value={sys}>{sys}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="trend-filter-item">
+                <label>风险等级</label>
+                <select
+                  value={guaranteeRiskFilter}
+                  onChange={(e) => setGuaranteeRiskFilter(e.target.value)}
+                >
+                  <option value="全部">全部等级</option>
+                  {guaranteeConfig.riskLevels.map((level) => (
+                    <option key={level} value={level}>{level}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="trend-filter-item">
+                <label>风险来源</label>
+                <select
+                  value={guaranteeSourceFilter}
+                  onChange={(e) => setGuaranteeSourceFilter(e.target.value)}
+                >
+                  <option value="全部">全部来源</option>
+                  <option value="库存安全线">库存安全线</option>
+                  <option value="已批准未发放">已批准未发放</option>
+                  <option value="采购在途">采购在途</option>
+                  <option value="高紧急待审">高紧急待审</option>
+                  <option value="趋势分析">趋势分析</option>
+                </select>
+              </div>
+              <div className="trend-filter-item trend-filter-actions">
+                <button
+                  className="primary"
+                  style={{ marginTop: '22px', padding: '10px 20px' }}
+                  onClick={() => {
+                    setGuaranteeShipFilter('全部');
+                    setGuaranteeSystemFilter('全部');
+                    setGuaranteeRiskFilter('全部');
+                    setGuaranteeSourceFilter('全部');
+                  }}
+                >
+                  <RefreshCw size={14} />重置
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="workspace">
+            <section className="panel list-panel">
+              <div className="panel-title">
+                <AlertTriangle size={18} />
+                <h2>未来风险清单（{filteredGuaranteeRisks.length}项）</h2>
+                <span className="panel-subtitle" style={{ marginLeft: 'auto', fontSize: '12px', color: '#888' }}>
+                  按风险等级排序，自动建议仅供参考，不直接修改业务数据
+                </span>
+              </div>
+
+              {filteredGuaranteeRisks.length === 0 ? (
+                <p className="empty" style={{ padding: '40px', textAlign: 'center' }}>
+                  暂无符合筛选条件的风险项，系统运行良好！
+                </p>
+              ) : (
+                <div className="records">
+                  {filteredGuaranteeRisks.map((risk) => {
+                    const isOverdue = risk.riskDate && risk.riskDate <= today;
+                    const daysToRisk = risk.riskDate ? daysBetween(today, risk.riskDate) : null;
+                    return (
+                      <article
+                        className={'record guarantee-risk-record ' + (selectedGuaranteeRisk?.id === risk.id ? 'guarantee-risk-selected' : '')}
+                        key={risk.id}
+                        onClick={() => setSelectedGuaranteeRisk(risk)}
+                      >
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', marginBottom: '8px' }}>
+                          <div className="record-ship-tag">
+                            <Ship size={13} />
+                            <span>{risk.ship}</span>
+                          </div>
+                          <span className={'status guarantee-risk-level risk-level-' + risk.riskLevel}>
+                            {risk.riskLevel === '紧急' && <AlertOctagon size={12} />}
+                            {risk.riskLevel !== '紧急' && risk.riskLevel === '高' && <AlertTriangle size={12} />}
+                            {risk.riskLevel !== '紧急' && risk.riskLevel !== '高' && <Info size={12} />}
+                            {risk.riskLevel}风险
+                          </span>
+                          <span className="status guarantee-risk-source">
+                            <Layers size={12} />
+                            {risk.source}
+                          </span>
+                        </div>
+                        <div className="record-head">
+                          <div>
+                            <h3>{risk.partName}</h3>
+                            <p>{`${risk.system} · ${risk.location}`}</p>
+                          </div>
+                          {risk.urgency === '高' && (
+                            <span className="urgency-tag urgency-high">
+                              <AlertTriangle size={12} />
+                              高紧急
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="guarantee-risk-info-grid">
+                          <div className="guarantee-risk-info-item">
+                            <span className="guarantee-risk-info-label">缺口数量</span>
+                            <strong className="guarantee-risk-gap">{risk.gapQty}件</strong>
+                          </div>
+                          <div className="guarantee-risk-info-item">
+                            <span className="guarantee-risk-info-label">预计风险日期</span>
+                            <span className={'guarantee-risk-date ' + (isOverdue ? 'risk-date-overdue' : '')}>
+                              <CalendarDays size={12} />
+                              {risk.riskDate || '待定'}
+                              {daysToRisk !== null && !isOverdue && daysToRisk >= 0 && (
+                                <span className="risk-days-remaining">（{daysToRisk}天后）</span>
+                              )}
+                              {isOverdue && <span className="risk-days-overdue">（已逾期）</span>}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="guarantee-risk-basis">
+                          <Info size={12} />
+                          <span><strong>依据说明：</strong>{risk.basis}</span>
+                        </div>
+
+                        <div className="guarantee-risk-action-bar" onClick={(e) => e.stopPropagation()}>
+                          <div className="guarantee-risk-suggestion">
+                            <Lightbulb size={14} />
+                            <span>建议操作：<strong>{risk.suggestedActionLabel}</strong></span>
+                          </div>
+                          <button
+                            className="primary guarantee-risk-action-btn"
+                            type="button"
+                            onClick={() => handleGuaranteeAction(risk)}
+                          >
+                            <ArrowRight size={14} />
+                            {risk.suggestedActionLabel}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <aside className="panel detail-panel">
+              <div className="panel-title">
+                <Shield size={18} />
+                <h2>风险详情</h2>
+              </div>
+              {selectedGuaranteeRisk ? (
+                <div className="detail">
+                  <div className="detail-ship-tag">
+                    <Ship size={16} />
+                    <span>{selectedGuaranteeRisk.ship}</span>
+                  </div>
+                  <h3>{selectedGuaranteeRisk.partName}</h3>
+                  <p>{`${selectedGuaranteeRisk.system} · ${selectedGuaranteeRisk.location}`}</p>
+
+                  <div className="approval-info-grid" style={{ marginTop: '16px' }}>
+                    <div className="stock-item">
+                      <span>风险等级</span>
+                      <span className={'status guarantee-risk-level risk-level-' + selectedGuaranteeRisk.riskLevel}>
+                        {selectedGuaranteeRisk.riskLevel}
+                      </span>
+                    </div>
+                    <div className="stock-item">
+                      <span>风险来源</span>
+                      <strong>{selectedGuaranteeRisk.source}</strong>
+                    </div>
+                    <div className="stock-item">
+                      <span>缺口数量</span>
+                      <strong className="guarantee-risk-gap">{selectedGuaranteeRisk.gapQty}件</strong>
+                    </div>
+                    <div className="stock-item">
+                      <span>预计风险日期</span>
+                      <strong>{selectedGuaranteeRisk.riskDate || '待定'}</strong>
+                    </div>
+                    {selectedGuaranteeRisk.urgency && (
+                      <div className="stock-item">
+                        <span>紧急程度</span>
+                        <span className={'urgency-tag urgency-' + (selectedGuaranteeRisk.urgency === '高' ? 'high' : selectedGuaranteeRisk.urgency === '中' ? 'medium' : 'low')}>
+                          {selectedGuaranteeRisk.urgency}紧急
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="guarantee-risk-detail-section">
+                    <div className="approval-form-divider">
+                      <Info size={14} />
+                      <span>依据说明</span>
+                    </div>
+                    <p className="guarantee-risk-basis-text">{selectedGuaranteeRisk.basis}</p>
+                  </div>
+
+                  <div className="guarantee-risk-detail-section">
+                    <div className="approval-form-divider">
+                      <Lightbulb size={14} />
+                      <span>系统建议操作</span>
+                    </div>
+                    <div className="guarantee-risk-suggestion-box">
+                      <div className="guarantee-risk-suggestion-main">
+                        <Lightbulb size={18} />
+                        <div>
+                          <strong>{selectedGuaranteeRisk.suggestedActionLabel}</strong>
+                          <p className="guarantee-risk-disclaimer">
+                            以上为系统自动分析建议，仅供参考。点击按钮将跳转至对应模块，您可根据实际情况调整后再进行操作。系统不会直接修改任何业务数据。
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        className="primary guarantee-risk-action-btn-lg"
+                        type="button"
+                        onClick={() => handleGuaranteeAction(selectedGuaranteeRisk)}
+                      >
+                        <ArrowRight size={16} />
+                        {selectedGuaranteeRisk.suggestedActionLabel}
+                      </button>
+                    </div>
+                  </div>
+
+                  {(selectedGuaranteeRisk.sourceKey === 'inventory' && selectedGuaranteeRisk.inventoryId) && (
+                    <div className="purchase-related-section">
+                      <div className="dist-section-title">
+                        <Package size={15} />
+                        <strong>关联库存</strong>
+                      </div>
+                      <div className="purchase-related-info">
+                        {(() => {
+                          const inv = inventory.find(i => i.id === selectedGuaranteeRisk.inventoryId);
+                          if (!inv) return <p>未找到库存记录</p>;
+                          return (
+                            <>
+                              <p><strong>{inv.partName}</strong> · {inv.ship}</p>
+                              <p>{`${inv.system} · ${inv.location} | 当前库存：${inv.currentStock} / 安全库存：${inv.safetyStock}`}</p>
+                              <button
+                                className="primary"
+                                type="button"
+                                style={{ marginTop: '8px' }}
+                                onClick={() => {
+                                  setSelectedInv(inv);
+                                  setActiveTab('inventory');
+                                }}
+                              >
+                                <ArrowRight size={14} />查看库存详情
+                              </button>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedGuaranteeRisk.applicationId && (
+                    <div className="purchase-related-section">
+                      <div className="dist-section-title">
+                        <ClipboardList size={15} />
+                        <strong>关联申请</strong>
+                      </div>
+                      <div className="purchase-related-info">
+                        {(() => {
+                          const app = records.find(r => r.id === selectedGuaranteeRisk.applicationId);
+                          if (!app) return <p>未找到申请记录</p>;
+                          return (
+                            <>
+                              <p><strong>{app.partName}</strong> · {app.ship}</p>
+                              <p>{`${app.system} · ${app.location} | 需求${app.qty}${app.approvedQty ? ' / 批准' + app.approvedQty : ''} | 状态：${app.status}`}</p>
+                              <button
+                                className="primary"
+                                type="button"
+                                style={{ marginTop: '8px' }}
+                                onClick={() => {
+                                  if (app.status === '待审批') {
+                                    setSelectedApproval(app);
+                                    setApprovalSubTab(app.urgency === '高' ? 'urgent' : 'normal');
+                                    setActiveTab('approval');
+                                  } else {
+                                    setSelected(app);
+                                    setActiveTab('application');
+                                  }
+                                }}
+                              >
+                                <ArrowRight size={14} />查看申请详情
+                              </button>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedGuaranteeRisk.purchaseId && (
+                    <div className="purchase-related-section">
+                      <div className="dist-section-title">
+                        <ShoppingCart size={15} />
+                        <strong>关联采购</strong>
+                      </div>
+                      <div className="purchase-related-info">
+                        {(() => {
+                          const p = purchases.find(x => x.id === selectedGuaranteeRisk.purchaseId);
+                          if (!p) return <p>未找到采购记录</p>;
+                          return (
+                            <>
+                              <p><strong>{p.partName}</strong> · {p.ship}</p>
+                              <p>{`采购${p.purchaseQty}件 | 状态：${p.status}${p.supplier ? ' | 供应商：' + p.supplier : ''}`}</p>
+                              {p.etaDate && <p>预计到港：{p.etaDate}</p>}
+                              <button
+                                className="primary"
+                                type="button"
+                                style={{ marginTop: '8px' }}
+                                onClick={() => {
+                                  setSelectedPurchase(p);
+                                  setActiveTab('purchase');
+                                }}
+                              >
+                                <ArrowRight size={14} />查看采购详情
+                              </button>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="empty" style={{ padding: '40px 20px', textAlign: 'center' }}>
+                  <Shield size={32} style={{ opacity: 0.4, marginBottom: '12px' }} />
+                  <p style={{ color: '#667085' }}>点击左侧任意风险项，查看详细信息和处置建议。</p>
+                  <p style={{ fontSize: '12px', color: '#98a2b3', marginTop: '8px' }}>
+                    系统自动分析建议仅供参考，所有操作需您确认后执行。
+                  </p>
+                </div>
+              )}
+            </aside>
           </section>
         </>
       )}
