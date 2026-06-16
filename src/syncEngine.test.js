@@ -64,6 +64,17 @@ function makeBaseline(records) {
   return baseline;
 }
 
+function markQueueOpsRemovedByConflict(opsToRemove, syncedAt = Date.now()) {
+  const removeIds = new Set(opsToRemove);
+  const updated = loadSyncQueue().map((op) =>
+    removeIds.has(op.id)
+      ? { ...op, synced: true, removedByConflict: true, syncedAt }
+      : op
+  );
+  saveSyncQueue(updated);
+  return updated;
+}
+
 describe('syncEngine - 离线同步冲突逻辑', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -1198,8 +1209,8 @@ describe('syncEngine - 离线同步冲突逻辑', () => {
     });
   });
 
-  describe('冲突与队列集成：检测 → 解决 → 队列清理', () => {
-    it('MULTIPLE_STATUS_CHANGES 冲突解决后应从队列移除所有关联操作', () => {
+  describe('冲突与队列集成：检测 → 解决 → 队列标记', () => {
+    it('MULTIPLE_STATUS_CHANGES 冲突解决后应标记所有关联操作为冲突移除', () => {
       const record = makeApplication({ id: 'app-int-001', status: '待审批' });
       takeBaseline([record]);
 
@@ -1233,14 +1244,22 @@ describe('syncEngine - 离线同步冲突逻辑', () => {
         [record]
       );
 
-      applyResult.opsToRemove.forEach((opId) => removeFromQueue(opId));
+      const syncedAt = 1700000000000;
+      const markedQueue = markQueueOpsRemovedByConflict(applyResult.opsToRemove, syncedAt);
 
       const remaining = getPendingOperations();
       expect(remaining.length).toBe(0);
+      expect(markedQueue.length).toBe(2);
+      markedQueue.forEach((op) => {
+        expect(op.synced).toBe(true);
+        expect(op.removedByConflict).toBe(true);
+        expect(op.syncedAt).toBe(syncedAt);
+      });
+      expect(getCompletedOperations().map((op) => op.id)).toEqual([op1.id, op2.id]);
       expect(applyResult.records[0].status).toBe('已驳回');
     });
 
-    it('DELETE_THEN_APPROVE 冲突选择 KEEP_LOCAL 后应移除删除和审批操作', () => {
+    it('DELETE_THEN_APPROVE 冲突选择 KEEP_LOCAL 后应标记删除和审批操作', () => {
       const record = makeApplication({ id: 'app-int-002', status: '待审批' });
       takeBaseline([record]);
 
@@ -1274,15 +1293,22 @@ describe('syncEngine - 离线同步冲突逻辑', () => {
         [record]
       );
 
-      applyResult.opsToRemove.forEach((opId) => removeFromQueue(opId));
+      const syncedAt = 1700000000100;
+      const markedQueue = markQueueOpsRemovedByConflict(applyResult.opsToRemove, syncedAt);
 
       expect(getPendingOperations().length).toBe(0);
       expect(applyResult.records.length).toBe(0);
       expect(applyResult.opsToRemove).toContain(deleteOp.id);
       expect(applyResult.opsToRemove).toContain(approveOp.id);
+      expect(markedQueue.length).toBe(2);
+      markedQueue.forEach((op) => {
+        expect(op.synced).toBe(true);
+        expect(op.removedByConflict).toBe(true);
+        expect(op.syncedAt).toBe(syncedAt);
+      });
     });
 
-    it('REMOTE_DELETED 冲突选择 KEEP_REMOTE 后应清理队列并接受删除', () => {
+    it('REMOTE_DELETED 冲突选择 KEEP_REMOTE 后应标记队列并接受删除', () => {
       const record = makeApplication({ id: 'app-int-003', status: '待审批' });
       takeBaseline([record]);
 
@@ -1306,14 +1332,22 @@ describe('syncEngine - 离线同步冲突逻辑', () => {
         [record]
       );
 
-      applyResult.opsToRemove.forEach((opId) => removeFromQueue(opId));
+      const syncedAt = 1700000000200;
+      const markedQueue = markQueueOpsRemovedByConflict(applyResult.opsToRemove, syncedAt);
 
       expect(getPendingOperations().length).toBe(0);
       expect(applyResult.records.length).toBe(0);
       expect(applyResult.opsToRemove).toContain(updateOp.id);
+      expect(markedQueue).toHaveLength(1);
+      expect(markedQueue[0]).toMatchObject({
+        id: updateOp.id,
+        synced: true,
+        removedByConflict: true,
+        syncedAt,
+      });
     });
 
-    it('多次冲突解决后队列中应只保留无冲突的操作', () => {
+    it('多次冲突解决后待处理队列应只保留无冲突的操作', () => {
       const record1 = makeApplication({ id: 'app-int-010', status: '待审批' });
       const record2 = makeApplication({ id: 'app-int-011', status: '待审批' });
       takeBaseline([record1, record2]);
@@ -1354,12 +1388,24 @@ describe('syncEngine - 离线同步冲突逻辑', () => {
         [record1, record2]
       );
 
-      applyResult.opsToRemove.forEach((opId) => removeFromQueue(opId));
+      const syncedAt = 1700000000300;
+      const markedQueue = markQueueOpsRemovedByConflict(applyResult.opsToRemove, syncedAt);
 
       const remaining = getPendingOperations();
       expect(remaining.length).toBe(1);
       expect(remaining[0].id).toBe(normalOp.id);
       expect(remaining[0].targetId).toBe('app-int-011');
+
+      const conflictOps = markedQueue.filter((op) => applyResult.opsToRemove.includes(op.id));
+      expect(conflictOps.length).toBe(2);
+      conflictOps.forEach((op) => {
+        expect(op.synced).toBe(true);
+        expect(op.removedByConflict).toBe(true);
+        expect(op.syncedAt).toBe(syncedAt);
+      });
+      const untouchedOp = markedQueue.find((op) => op.id === normalOp.id);
+      expect(untouchedOp.synced).toBe(false);
+      expect(untouchedOp).not.toHaveProperty('removedByConflict');
     });
 
     it('冲突记录应持久化到 localStorage 并在页面刷新后可恢复', () => {
