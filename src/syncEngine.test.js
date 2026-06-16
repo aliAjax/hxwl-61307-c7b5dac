@@ -7,6 +7,20 @@ import {
   RESOLUTION_STRATEGIES,
   OP_TYPES,
   OBJECT_TYPES,
+  loadSyncQueue,
+  saveSyncQueue,
+  loadConflicts,
+  saveConflicts,
+  loadBaseline,
+  saveBaseline,
+  enqueueOperation,
+  removeFromQueue,
+  clearQueue,
+  getPendingOperations,
+  getCompletedOperations,
+  getPendingOperationsByType,
+  takeBaseline,
+  clearAllSyncData,
 } from './syncEngine';
 
 function makeOp(overrides = {}) {
@@ -1004,6 +1018,411 @@ describe('syncEngine - 离线同步冲突逻辑', () => {
       expect(applyResult.records[0].id).toBe('app-e2e-003');
       expect(applyResult.records[0]._wasRecreated).toBe(true);
       expect(applyResult.opsToRemove).toEqual(['op-mod']);
+    });
+  });
+
+  describe('localStorage 队列与存储标记', () => {
+    describe('同步队列基本操作', () => {
+      it('enqueueOperation 应将操作加入 localStorage 队列并标记为未同步', () => {
+        const op = enqueueOperation({
+          type: OP_TYPES.CREATE,
+          targetId: 'app-queue-001',
+          objectType: OBJECT_TYPES.APPLICATION,
+          payload: { record: makeApplication({ id: 'app-queue-001' }) },
+        });
+
+        expect(op.id).toBeDefined();
+        expect(op.synced).toBe(false);
+        expect(op.syncAttempts).toBe(0);
+
+        const queue = loadSyncQueue();
+        expect(queue.length).toBe(1);
+        expect(queue[0].id).toBe(op.id);
+        expect(queue[0].synced).toBe(false);
+        expect(queue[0].type).toBe(OP_TYPES.CREATE);
+      });
+
+      it('getPendingOperations 应只返回 synced=false 的操作', () => {
+        const op1 = enqueueOperation({ type: OP_TYPES.CREATE, targetId: 'app-p1' });
+        const op2 = enqueueOperation({ type: OP_TYPES.UPDATE, targetId: 'app-p2' });
+
+        const queue = loadSyncQueue();
+        queue[0].synced = true;
+        saveSyncQueue(queue);
+
+        const pending = getPendingOperations();
+        expect(pending.length).toBe(1);
+        expect(pending[0].id).toBe(op2.id);
+        expect(pending[0].synced).toBe(false);
+      });
+
+      it('getCompletedOperations 应只返回 synced=true 的操作', () => {
+        enqueueOperation({ type: OP_TYPES.CREATE, targetId: 'app-c1' });
+        enqueueOperation({ type: OP_TYPES.DELETE, targetId: 'app-c2' });
+
+        const queue = loadSyncQueue();
+        queue[1].synced = true;
+        saveSyncQueue(queue);
+
+        const completed = getCompletedOperations();
+        expect(completed.length).toBe(1);
+        expect(completed[0].type).toBe(OP_TYPES.DELETE);
+      });
+
+      it('removeFromQueue 应从 localStorage 队列中移除指定操作', () => {
+        const op1 = enqueueOperation({ type: OP_TYPES.CREATE, targetId: 'app-r1' });
+        const op2 = enqueueOperation({ type: OP_TYPES.UPDATE, targetId: 'app-r2' });
+
+        expect(loadSyncQueue().length).toBe(2);
+
+        removeFromQueue(op1.id);
+
+        const queue = loadSyncQueue();
+        expect(queue.length).toBe(1);
+        expect(queue[0].id).toBe(op2.id);
+      });
+
+      it('clearQueue 应清空 localStorage 中的同步队列', () => {
+        enqueueOperation({ type: OP_TYPES.CREATE, targetId: 'app-cl1' });
+        enqueueOperation({ type: OP_TYPES.APPROVE, targetId: 'app-cl2' });
+
+        expect(loadSyncQueue().length).toBe(2);
+
+        clearQueue();
+
+        expect(loadSyncQueue().length).toBe(0);
+        expect(getPendingOperations().length).toBe(0);
+      });
+
+      it('getPendingOperationsByType 应按对象类型分组待同步操作', () => {
+        enqueueOperation({ type: OP_TYPES.CREATE, targetId: 'app-g1', objectType: OBJECT_TYPES.APPLICATION });
+        enqueueOperation({ type: OP_TYPES.UPDATE, targetId: 'inv-g1', objectType: OBJECT_TYPES.INVENTORY });
+        enqueueOperation({ type: OP_TYPES.CREATE, targetId: 'app-g2', objectType: OBJECT_TYPES.APPLICATION });
+
+        const grouped = getPendingOperationsByType();
+
+        expect(grouped[OBJECT_TYPES.APPLICATION].length).toBe(2);
+        expect(grouped[OBJECT_TYPES.INVENTORY].length).toBe(1);
+        expect(grouped[OBJECT_TYPES.PURCHASE].length).toBe(0);
+      });
+    });
+
+    describe('冲突存储 (loadConflicts / saveConflicts)', () => {
+      it('saveConflicts 应将冲突保存到 localStorage', () => {
+        const conflict = {
+          id: 'conflict-storage-001',
+          type: CONFLICT_TYPES.MULTIPLE_STATUS_CHANGES,
+          targetId: 'app-s1',
+          resolved: false,
+        };
+
+        saveConflicts([conflict]);
+
+        const loaded = loadConflicts();
+        expect(loaded.length).toBe(1);
+        expect(loaded[0].id).toBe('conflict-storage-001');
+        expect(loaded[0].type).toBe(CONFLICT_TYPES.MULTIPLE_STATUS_CHANGES);
+      });
+
+      it('loadConflicts 在无数据时应返回空数组', () => {
+        const loaded = loadConflicts();
+        expect(Array.isArray(loaded)).toBe(true);
+        expect(loaded.length).toBe(0);
+      });
+
+      it('冲突解决后应更新 resolved 标记并持久化', () => {
+        const conflict = {
+          id: 'conflict-resolve-001',
+          type: CONFLICT_TYPES.MULTIPLE_STATUS_CHANGES,
+          targetId: 'app-s2',
+          autoResolvable: true,
+          recommendedStrategy: RESOLUTION_STRATEGIES.KEEP_LOCAL,
+          resolved: false,
+          resolution: null,
+        };
+
+        saveConflicts([conflict]);
+
+        const autoResult = autoResolveConflict(conflict);
+        const conflicts = loadConflicts();
+        conflicts[0] = autoResult.conflict;
+        saveConflicts(conflicts);
+
+        const reloaded = loadConflicts();
+        expect(reloaded[0].resolved).toBe(true);
+        expect(reloaded[0].resolution.strategy).toBe(RESOLUTION_STRATEGIES.KEEP_LOCAL);
+        expect(reloaded[0].resolution.by).toBe('system');
+      });
+    });
+
+    describe('baseline 存储', () => {
+      it('takeBaseline 应将当前记录快照保存到 localStorage', () => {
+        const records = [
+          makeApplication({ id: 'app-base-001', status: '待审批' }),
+          makeApplication({ id: 'app-base-002', status: '已批准' }),
+        ];
+
+        const baseline = takeBaseline(records);
+
+        expect(baseline['app-base-001']).toBeDefined();
+        expect(baseline['app-base-002'].status).toBe('已批准');
+
+        const stored = loadBaseline();
+        expect(stored['app-base-001'].status).toBe('待审批');
+        expect(stored['app-base-002'].partName).toBe('海水泵密封圈');
+      });
+
+      it('loadBaseline 在无数据时应返回空对象', () => {
+        const baseline = loadBaseline();
+        expect(typeof baseline).toBe('object');
+        expect(Object.keys(baseline).length).toBe(0);
+      });
+    });
+
+    describe('clearAllSyncData', () => {
+      it('应清除所有同步相关的 localStorage 数据', () => {
+        enqueueOperation({ type: OP_TYPES.CREATE, targetId: 'app-clear-1' });
+        saveConflicts([{ id: 'c1', type: CONFLICT_TYPES.REMOTE_DELETED, targetId: 'x' }]);
+        saveBaseline({ 'app-x': { id: 'app-x' } });
+
+        expect(loadSyncQueue().length).toBeGreaterThan(0);
+        expect(loadConflicts().length).toBeGreaterThan(0);
+        expect(Object.keys(loadBaseline()).length).toBeGreaterThan(0);
+
+        clearAllSyncData();
+
+        expect(loadSyncQueue().length).toBe(0);
+        expect(loadConflicts().length).toBe(0);
+        expect(Object.keys(loadBaseline()).length).toBe(0);
+      });
+    });
+  });
+
+  describe('冲突与队列集成：检测 → 解决 → 队列清理', () => {
+    it('MULTIPLE_STATUS_CHANGES 冲突解决后应从队列移除所有关联操作', () => {
+      const record = makeApplication({ id: 'app-int-001', status: '待审批' });
+      takeBaseline([record]);
+
+      const op1 = enqueueOperation({
+        type: OP_TYPES.APPROVE,
+        targetId: 'app-int-001',
+        payload: { fromStatus: '待审批', toStatus: '已批准', approvedQty: '2', by: '审批员A' },
+      });
+      const op2 = enqueueOperation({
+        type: OP_TYPES.REJECT,
+        targetId: 'app-int-001',
+        payload: { fromStatus: '已批准', toStatus: '已驳回', by: '审批员B', comment: '数量不对' },
+      });
+
+      expect(getPendingOperations().length).toBe(2);
+
+      const baseline = loadBaseline();
+      const pendingOps = getPendingOperations();
+      const remoteRecords = [makeApplication({ id: 'app-int-001', status: '待审批' })];
+      const conflicts = detectConflicts(pendingOps, baseline, remoteRecords);
+
+      expect(conflicts.length).toBe(1);
+      expect(conflicts[0].type).toBe(CONFLICT_TYPES.MULTIPLE_STATUS_CHANGES);
+      expect(conflicts[0].affectedOps).toContain(op1.id);
+      expect(conflicts[0].affectedOps).toContain(op2.id);
+
+      const autoResult = autoResolveConflict(conflicts[0]);
+      const applyResult = applyConflictResolution(
+        autoResult.conflict,
+        autoResult.conflict.resolution.strategy,
+        [record]
+      );
+
+      applyResult.opsToRemove.forEach((opId) => removeFromQueue(opId));
+
+      const remaining = getPendingOperations();
+      expect(remaining.length).toBe(0);
+      expect(applyResult.records[0].status).toBe('已驳回');
+    });
+
+    it('DELETE_THEN_APPROVE 冲突选择 KEEP_LOCAL 后应移除删除和审批操作', () => {
+      const record = makeApplication({ id: 'app-int-002', status: '待审批' });
+      takeBaseline([record]);
+
+      const deleteOp = enqueueOperation({
+        type: OP_TYPES.DELETE,
+        targetId: 'app-int-002',
+        timestamp: 1000,
+        payload: { originalRecord: record },
+      });
+      const approveOp = enqueueOperation({
+        type: OP_TYPES.APPROVE,
+        targetId: 'app-int-002',
+        timestamp: 2000,
+        payload: { toStatus: '已批准', by: '张经理', approvedQty: '3' },
+      });
+
+      expect(getPendingOperations().length).toBe(2);
+      expect(approveOp.timestamp).toBeGreaterThan(deleteOp.timestamp);
+
+      const baseline = loadBaseline();
+      const pendingOps = getPendingOperations();
+      const remoteRecords = [makeApplication({ id: 'app-int-002', status: '待审批' })];
+      const conflicts = detectConflicts(pendingOps, baseline, remoteRecords);
+
+      expect(conflicts.length).toBe(1);
+      expect(conflicts[0].type).toBe(CONFLICT_TYPES.DELETE_THEN_APPROVE);
+
+      const applyResult = applyConflictResolution(
+        conflicts[0],
+        RESOLUTION_STRATEGIES.KEEP_LOCAL,
+        [record]
+      );
+
+      applyResult.opsToRemove.forEach((opId) => removeFromQueue(opId));
+
+      expect(getPendingOperations().length).toBe(0);
+      expect(applyResult.records.length).toBe(0);
+      expect(applyResult.opsToRemove).toContain(deleteOp.id);
+      expect(applyResult.opsToRemove).toContain(approveOp.id);
+    });
+
+    it('REMOTE_DELETED 冲突选择 KEEP_REMOTE 后应清理队列并接受删除', () => {
+      const record = makeApplication({ id: 'app-int-003', status: '待审批' });
+      takeBaseline([record]);
+
+      const updateOp = enqueueOperation({
+        type: OP_TYPES.UPDATE,
+        targetId: 'app-int-003',
+        payload: { qty: '5', reason: '增加数量' },
+      });
+
+      expect(getPendingOperations().length).toBe(1);
+
+      const baseline = loadBaseline();
+      const pendingOps = getPendingOperations();
+      const conflicts = detectConflicts(pendingOps, baseline, []);
+
+      expect(conflicts[0].type).toBe(CONFLICT_TYPES.REMOTE_DELETED);
+
+      const applyResult = applyConflictResolution(
+        conflicts[0],
+        RESOLUTION_STRATEGIES.KEEP_REMOTE,
+        [record]
+      );
+
+      applyResult.opsToRemove.forEach((opId) => removeFromQueue(opId));
+
+      expect(getPendingOperations().length).toBe(0);
+      expect(applyResult.records.length).toBe(0);
+      expect(applyResult.opsToRemove).toContain(updateOp.id);
+    });
+
+    it('多次冲突解决后队列中应只保留无冲突的操作', () => {
+      const record1 = makeApplication({ id: 'app-int-010', status: '待审批' });
+      const record2 = makeApplication({ id: 'app-int-011', status: '待审批' });
+      takeBaseline([record1, record2]);
+
+      enqueueOperation({
+        type: OP_TYPES.APPROVE,
+        targetId: 'app-int-010',
+        payload: { toStatus: '已批准', by: 'A' },
+      });
+      enqueueOperation({
+        type: OP_TYPES.REJECT,
+        targetId: 'app-int-010',
+        payload: { toStatus: '已驳回', by: 'B' },
+      });
+      const normalOp = enqueueOperation({
+        type: OP_TYPES.APPROVE,
+        targetId: 'app-int-011',
+        payload: { toStatus: '已批准', by: 'C' },
+      });
+
+      expect(getPendingOperations().length).toBe(3);
+
+      const baseline = loadBaseline();
+      const pendingOps = getPendingOperations();
+      const remoteRecords = [
+        makeApplication({ id: 'app-int-010', status: '待审批' }),
+        makeApplication({ id: 'app-int-011', status: '待审批' }),
+      ];
+      const conflicts = detectConflicts(pendingOps, baseline, remoteRecords);
+
+      expect(conflicts.length).toBe(1);
+      expect(conflicts[0].targetId).toBe('app-int-010');
+
+      const autoResult = autoResolveConflict(conflicts[0]);
+      const applyResult = applyConflictResolution(
+        autoResult.conflict,
+        autoResult.conflict.resolution.strategy,
+        [record1, record2]
+      );
+
+      applyResult.opsToRemove.forEach((opId) => removeFromQueue(opId));
+
+      const remaining = getPendingOperations();
+      expect(remaining.length).toBe(1);
+      expect(remaining[0].id).toBe(normalOp.id);
+      expect(remaining[0].targetId).toBe('app-int-011');
+    });
+
+    it('冲突记录应持久化到 localStorage 并在页面刷新后可恢复', () => {
+      const record = makeApplication({ id: 'app-int-020', status: '待审批' });
+      takeBaseline([record]);
+
+      enqueueOperation({
+        type: OP_TYPES.APPROVE,
+        targetId: 'app-int-020',
+        payload: { toStatus: '已批准', by: '审批员' },
+      });
+      enqueueOperation({
+        type: OP_TYPES.DISPATCH,
+        targetId: 'app-int-020',
+        payload: { toStatus: '已发放', by: '仓库' },
+      });
+
+      const baseline = loadBaseline();
+      const pendingOps = getPendingOperations();
+      const remoteRecords = [makeApplication({ id: 'app-int-020', status: '待审批' })];
+      const conflicts = detectConflicts(pendingOps, baseline, remoteRecords);
+
+      saveConflicts(conflicts);
+
+      const reloadedConflicts = loadConflicts();
+      expect(reloadedConflicts.length).toBe(1);
+      expect(reloadedConflicts[0].type).toBe(CONFLICT_TYPES.MULTIPLE_STATUS_CHANGES);
+      expect(reloadedConflicts[0].resolved).toBe(false);
+      expect(reloadedConflicts[0].localOperations.length).toBe(2);
+    });
+
+    it('已解决的冲突应在 localStorage 中标记为 resolved=true', () => {
+      const record = makeApplication({ id: 'app-int-030', status: '待审批' });
+      takeBaseline([record]);
+
+      enqueueOperation({
+        type: OP_TYPES.APPROVE,
+        targetId: 'app-int-030',
+        payload: { toStatus: '已批准', by: 'A' },
+      });
+      enqueueOperation({
+        type: OP_TYPES.REJECT,
+        targetId: 'app-int-030',
+        payload: { toStatus: '已驳回', by: 'B' },
+      });
+
+      const baseline = loadBaseline();
+      const pendingOps = getPendingOperations();
+      const remoteRecords = [makeApplication({ id: 'app-int-030', status: '待审批' })];
+      let conflicts = detectConflicts(pendingOps, baseline, remoteRecords);
+
+      saveConflicts(conflicts);
+
+      const autoResult = autoResolveConflict(conflicts[0]);
+      conflicts = loadConflicts();
+      conflicts[0] = autoResult.conflict;
+      saveConflicts(conflicts);
+
+      const stored = loadConflicts();
+      expect(stored[0].resolved).toBe(true);
+      expect(stored[0].resolution).toBeDefined();
+      expect(stored[0].resolution.strategy).toBe(RESOLUTION_STRATEGIES.KEEP_LOCAL);
+      expect(stored[0].resolution.by).toBe('system');
     });
   });
 });
