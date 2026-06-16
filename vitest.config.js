@@ -8,6 +8,8 @@ export default defineConfig({
     include: ['src/**/*.{test,test}.{js,jsx}', 'src/**/*.{spec,spec}.{js,jsx}'],
     coverage: {
       provider: 'v8',
+      reporter: ['text', 'html', 'lcov'],
+      reportsDirectory: 'coverage',
       include: ['src/syncEngine.js', 'src/auditMigrationEngine.js', 'src/import/csvParser.js', 'src/import/fieldMatcher.js', 'src/import/rowValidator.js'],
     },
   },
