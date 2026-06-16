@@ -55,6 +55,7 @@ import {
   loadAuditLog,
   RELATION_TYPES,
 } from './auditMigrationEngine';
+import { useBatchImport } from './import';
 
 const appConfig = {
   "id": "hxwl-61307",
@@ -642,198 +643,6 @@ function App() {
   const [selectedGuaranteeRisk, setSelectedGuaranteeRisk] = useState(null);
 
   const [showImportModal, setShowImportModal] = useState(false);
-  const [importType, setImportType] = useState('application');
-  const [importText, setImportText] = useState('');
-  const [importPreview, setImportPreview] = useState(null);
-  const [importTab, setImportTab] = useState('paste');
-  const [importPreviewTab, setImportPreviewTab] = useState('valid');
-  const fileInputRef = useRef(null);
-
-  const importTypeConfigs = {
-    application: {
-      label: '备件申请',
-      config: appConfig,
-      fieldAliasMap: {
-        'ship': ['所属船舶', '船舶', '船名', 'ship', 'vessel'],
-        'partName': ['备件名称', '备件', '配件名称', '配件', '零件名称', 'partname', 'part', 'name'],
-        'system': ['设备系统', '系统', '所属系统', 'system'],
-        'location': ['船舶位置', '位置', '存放位置', '库位', 'location', 'position'],
-        'qty': ['需求数量', '数量', '申请数量', 'qty', 'quantity', 'count'],
-        'urgency': ['紧急程度', '紧急', '优先级', 'urgency', 'priority'],
-        'reason': ['申请原因', '原因', '备注', '说明', 'reason', 'remark', 'note'],
-        'status': ['状态', '申请状态', 'status']
-      },
-      requiredFields: ['ship', 'partName', 'system', 'location', 'qty', 'urgency', 'reason'],
-      sampleFilename: '备件申请导入示例.csv',
-      auditEventType: AUDIT_EVENT_TYPES.IMPORT,
-      targetType: 'record',
-      getExistingRecords: () => records,
-      persistFn: persist,
-      duplicateCheck: (record, existing) => existing.some(r =>
-        r.ship === record.ship && r.partName === record.partName &&
-        r.system === record.system && r.location === record.location && !wasDispatched(r)
-      ),
-      internalDuplicateCheck: (a, b) =>
-        a.ship === b.ship && a.partName === b.partName &&
-        a.system === b.system && a.location === b.location,
-      duplicateLabel: '同一船舶、同一备件、同一系统、同一位置',
-      existingDuplicateLabel: '与现有申请记录重复（同一船舶、同一备件、同一系统、同一位置且未发放）',
-      extraValidate: (record, errors) => {
-        if (record.ship && !appConfig.ships.includes(record.ship)) {
-          errors.push(`船舶"${record.ship}"不在允许列表中，可选：${appConfig.ships.join('、')}`);
-        }
-        if (record.system) {
-          const opts = appConfig.fields.find(f => f.key === 'system')?.options || [];
-          if (!opts.includes(record.system)) errors.push(`设备系统"${record.system}"不在允许列表中，可选：${opts.join('、')}`);
-        }
-        if (record.urgency) {
-          const opts = appConfig.fields.find(f => f.key === 'urgency')?.options || [];
-          if (!opts.includes(record.urgency)) errors.push(`紧急程度"${record.urgency}"不在允许列表中，可选：${opts.join('、')}`);
-        }
-        if (record.status) {
-          if (!appConfig.statuses.includes(record.status)) errors.push(`状态"${record.status}"不在允许列表中，可选：${appConfig.statuses.join('、')}`);
-        }
-        if (record.qty) {
-          const n = Number(record.qty);
-          if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) errors.push(`需求数量必须是正整数，当前值：${record.qty}`);
-        }
-      },
-      buildNewRecord: (item) => ({
-        id: uid(),
-        ...item.data,
-        status: item.data.status || appConfig.primaryStatus,
-        createdAt: new Date().toISOString(),
-        timeline: [{ status: item.data.status || appConfig.primaryStatus, at: today, by: '批量导入' }]
-      }),
-      auditMetadata: (record) => ({ ship: record.ship, partName: record.partName, system: record.system, qty: record.qty, importBatch: true }),
-      previewFields: (data) => [
-        { cls: 'import-preview-ship', val: data.ship },
-        { cls: 'import-preview-part', val: data.partName },
-        { cls: 'import-preview-system', val: data.system },
-        { cls: 'import-preview-location', val: data.location },
-        { cls: 'import-preview-qty', val: `x${data.qty}` },
-        { cls: 'import-preview-urgency urgency-' + (data.urgency === '高' ? 'high' : data.urgency === '中' ? 'medium' : 'low'), val: data.urgency },
-      ],
-      previewDetail: (data) => data.reason,
-    },
-    inventory: {
-      label: '库存台账',
-      config: inventoryConfig,
-      fieldAliasMap: {
-        'ship': ['所属船舶', '船舶', '船名', 'ship', 'vessel'],
-        'partName': ['备件名称', '备件', '配件名称', '配件', '零件名称', 'partname', 'part', 'name'],
-        'system': ['设备系统', '系统', '所属系统', 'system'],
-        'location': ['船舶位置', '位置', '存放位置', '库位', 'location', 'position'],
-        'currentStock': ['当前库存', '库存数量', '现有库存', 'currentstock', 'stock', 'current'],
-        'safetyStock': ['安全库存', '最低库存', '预警库存', 'safetystock', 'safety', 'min'],
-        'lastCheckDate': ['最后盘点日期', '盘点日期', '最近盘点', 'lastcheckdate', 'checkdate', 'lastcheck'],
-      },
-      requiredFields: ['ship', 'partName', 'system', 'location', 'currentStock', 'safetyStock'],
-      sampleFilename: '库存台账导入示例.csv',
-      auditEventType: AUDIT_EVENT_TYPES.INVENTORY_IMPORT,
-      targetType: 'inventory',
-      getExistingRecords: () => inventory,
-      persistFn: persistInventory,
-      duplicateCheck: (record, existing) => existing.some(r =>
-        r.ship === record.ship && r.partName === record.partName &&
-        r.system === record.system && r.location === record.location
-      ),
-      internalDuplicateCheck: (a, b) =>
-        a.ship === b.ship && a.partName === b.partName &&
-        a.system === b.system && a.location === b.location,
-      duplicateLabel: '同一船舶、同一备件、同一系统、同一位置',
-      existingDuplicateLabel: '与现有库存记录重复（同一船舶、同一备件、同一系统、同一位置）',
-      extraValidate: (record, errors) => {
-        if (record.ship && !appConfig.ships.includes(record.ship)) {
-          errors.push(`船舶"${record.ship}"不在允许列表中，可选：${appConfig.ships.join('、')}`);
-        }
-        if (record.system) {
-          const opts = inventoryConfig.fields.find(f => f.key === 'system')?.options || [];
-          if (!opts.includes(record.system)) errors.push(`设备系统"${record.system}"不在允许列表中，可选：${opts.join('、')}`);
-        }
-        if (record.currentStock) {
-          const n = Number(record.currentStock);
-          if (!Number.isFinite(n) || n < 0) errors.push(`当前库存必须为非负数字，当前值：${record.currentStock}`);
-        }
-        if (record.safetyStock) {
-          const n = Number(record.safetyStock);
-          if (!Number.isFinite(n) || n < 0) errors.push(`安全库存必须为非负数字，当前值：${record.safetyStock}`);
-        }
-      },
-      buildNewRecord: (item) => ({
-        id: uid(),
-        ...item.data,
-        createdAt: new Date().toISOString()
-      }),
-      auditMetadata: (record) => ({ ship: record.ship, partName: record.partName, system: record.system, currentStock: record.currentStock, safetyStock: record.safetyStock, importBatch: true }),
-      previewFields: (data) => [
-        { cls: 'import-preview-ship', val: data.ship },
-        { cls: 'import-preview-part', val: data.partName },
-        { cls: 'import-preview-system', val: data.system },
-        { cls: 'import-preview-location', val: data.location },
-        { cls: 'import-preview-qty', val: `库存:${data.currentStock || '-'}` },
-        { cls: 'import-preview-urgency urgency-low', val: `安全:${data.safetyStock || '-'}` },
-      ],
-      previewDetail: (data) => data.lastCheckDate ? `盘点日期：${data.lastCheckDate}` : '',
-    },
-    template: {
-      label: '常用模板',
-      config: templateConfig,
-      fieldAliasMap: {
-        'templateName': ['模板名称', '名称', '模板', 'templatename', 'template', 'tplname'],
-        'ship': ['默认船舶', '所属船舶', '船舶', '船名', 'ship', 'vessel'],
-        'partName': ['备件名称', '备件', '配件名称', '配件', '零件名称', 'partname', 'part', 'name'],
-        'system': ['设备系统', '系统', '所属系统', 'system'],
-        'location': ['默认位置', '船舶位置', '位置', '存放位置', '库位', 'location', 'position'],
-        'qty': ['默认数量', '需求数量', '数量', '申请数量', 'qty', 'quantity', 'count'],
-        'reason': ['常用申请原因', '申请原因', '原因', '备注', '说明', 'reason', 'remark', 'note'],
-      },
-      requiredFields: ['templateName', 'ship', 'partName', 'system', 'location'],
-      sampleFilename: '常用模板导入示例.csv',
-      auditEventType: AUDIT_EVENT_TYPES.TEMPLATE_IMPORT,
-      targetType: 'template',
-      getExistingRecords: () => templates,
-      persistFn: (next) => { setTemplates(next); localStorage.setItem(templateConfig.storage, JSON.stringify(next)); },
-      duplicateCheck: (record, existing) => existing.some(r => r.templateName === record.templateName),
-      internalDuplicateCheck: (a, b) => a.templateName === b.templateName,
-      duplicateLabel: '同一模板名称',
-      existingDuplicateLabel: '与现有模板记录重复（同一模板名称）',
-      extraValidate: (record, errors) => {
-        if (record.ship && !appConfig.ships.includes(record.ship)) {
-          errors.push(`船舶"${record.ship}"不在允许列表中，可选：${appConfig.ships.join('、')}`);
-        }
-        if (record.system) {
-          const opts = templateConfig.fields.find(f => f.key === 'system')?.options || [];
-          if (!opts.includes(record.system)) errors.push(`设备系统"${record.system}"不在允许列表中，可选：${opts.join('、')}`);
-        }
-        if (record.qty) {
-          const n = Number(record.qty);
-          if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) errors.push(`默认数量必须是正整数，当前值：${record.qty}`);
-        }
-      },
-      buildNewRecord: (item) => ({
-        id: uid(),
-        ...item.data,
-        useCount: 0,
-        lastUsedAt: null,
-        createdAt: new Date().toISOString()
-      }),
-      auditMetadata: (record) => ({ templateName: record.templateName, ship: record.ship, partName: record.partName, importBatch: true }),
-      previewFields: (data) => [
-        { cls: 'import-preview-ship', val: data.templateName },
-        { cls: 'import-preview-part', val: data.partName },
-        { cls: 'import-preview-system', val: data.system },
-        { cls: 'import-preview-location', val: data.location },
-        { cls: 'import-preview-qty', val: `x${data.qty || '-'}` },
-        { cls: 'import-preview-urgency urgency-medium', val: data.ship },
-      ],
-      previewDetail: (data) => data.reason || '',
-    },
-  };
-
-  function currentImportConfig() {
-    return importTypeConfigs[importType];
-  }
 
   const [approvalSubTab, setApprovalSubTab] = useState('urgent');
   const [approvalSearch, setApprovalSearch] = useState('');
@@ -1373,6 +1182,46 @@ function App() {
     localStorage.setItem(inventoryConfig.storage, JSON.stringify(next));
   }
 
+  const {
+    importType,
+    importText,
+    importPreview,
+    importTab,
+    importPreviewTab,
+    fileInputRef,
+    importTypeConfigs,
+    currentImportConfig,
+    handleFileUpload,
+    handlePaste,
+    executeImport,
+    copySampleCSV,
+    downloadSampleCSV,
+    resetImportState,
+    switchImportType,
+    setImportTab,
+    setImportPreviewTab,
+  } = useBatchImport({
+    appConfig,
+    inventoryConfig,
+    templateConfig,
+    today,
+    uid,
+    wasDispatched,
+    records,
+    inventory,
+    templates,
+    persist,
+    persistInventory,
+    setTemplates,
+    AUDIT_EVENT_TYPES,
+    logAuditEvent,
+    operatorName,
+    setActiveTab,
+    onImportSuccess: () => {
+      setShowImportModal(false);
+    },
+  });
+
   function findInventoryItem(application) {
     if (!application) return null;
     return inventory.find((inv) =>
@@ -1465,314 +1314,6 @@ function App() {
     persist([nextRecord, ...records]);
     setForm(appConfig.defaultValues);
     setSelected(nextRecord);
-  }
-
-  function matchField(header, aliasMap) {
-    const lowerHeader = header.trim().toLowerCase();
-    for (const [fieldKey, aliases] of Object.entries(aliasMap)) {
-      for (const alias of aliases) {
-        if (lowerHeader === alias.toLowerCase()) {
-          return fieldKey;
-        }
-      }
-    }
-    return null;
-  }
-
-  function trimField(value) {
-    if (value === null || value === undefined) return '';
-    return String(value).replace(/^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g, '');
-  }
-
-  function parseCSV(text) {
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/^\ufeff/, '');
-    if (!normalizedText.trim()) {
-      return { headers: [], rows: [] };
-    }
-
-    const firstLineEnd = normalizedText.search(/\n/);
-    const firstLine = firstLineEnd !== -1 ? normalizedText.slice(0, firstLineEnd) : normalizedText;
-    const delimiter = firstLine.includes('\t') ? '\t' : (firstLine.includes(';') ? ';' : ',');
-
-    const allRows = [];
-    let currentField = '';
-    let inQuotes = false;
-    let i = 0;
-    let currentRow = [];
-    let fieldStartInQuotes = false;
-
-    while (i < normalizedText.length) {
-      const char = normalizedText[i];
-      const nextChar = normalizedText[i + 1];
-
-      if (inQuotes) {
-        if (char === '"' && nextChar === '"') {
-          currentField += '"';
-          i += 2;
-        } else if (char === '"') {
-          inQuotes = false;
-          i++;
-          while (i < normalizedText.length && (normalizedText[i] === ' ' || normalizedText[i] === '\t')) {
-            i++;
-          }
-        } else {
-          currentField += char;
-          i++;
-        }
-      } else {
-        if (!fieldStartInQuotes && currentField === '' && (char === ' ' || char === '\t')) {
-          i++;
-        } else if (char === '"' && currentField.trim() === '') {
-          currentField = '';
-          fieldStartInQuotes = true;
-          inQuotes = true;
-          i++;
-        } else if (char === delimiter) {
-          currentRow.push(fieldStartInQuotes ? currentField : trimField(currentField));
-          currentField = '';
-          fieldStartInQuotes = false;
-          i++;
-        } else if (char === '\n') {
-          currentRow.push(fieldStartInQuotes ? currentField : trimField(currentField));
-          allRows.push(currentRow);
-          currentRow = [];
-          currentField = '';
-          fieldStartInQuotes = false;
-          i++;
-        } else {
-          currentField += char;
-          i++;
-        }
-      }
-    }
-
-    if (currentField !== '' || currentRow.length > 0) {
-      currentRow.push(fieldStartInQuotes ? currentField : trimField(currentField));
-      allRows.push(currentRow);
-    }
-
-    const nonEmptyRows = allRows.filter(row => row.some(cell => trimField(cell) !== ''));
-    if (nonEmptyRows.length < 2) {
-      return { headers: [], rows: [] };
-    }
-
-    const headers = nonEmptyRows[0].map(h => trimField(h));
-    const rows = nonEmptyRows.slice(1).map(row => {
-      const obj = {};
-      headers.forEach((header, idx) => {
-        const rawValue = row[idx] !== undefined ? row[idx] : '';
-        obj[header] = trimField(rawValue);
-      });
-      return obj;
-    });
-
-    return { headers, rows };
-  }
-
-  function validateRow(row, fieldMapping, rowIndex, existingRecords, parsedRows, typeConfig) {
-    const errors = [];
-    const record = {};
-
-    for (const [csvHeader, fieldKey] of Object.entries(fieldMapping)) {
-      if (fieldKey && row[csvHeader] !== undefined) {
-        record[fieldKey] = row[csvHeader].trim();
-      }
-    }
-
-    for (const field of typeConfig.requiredFields) {
-      if (!record[field] || record[field].trim() === '') {
-        const fieldConfig = typeConfig.config.fields.find(f => f.key === field);
-        errors.push(`缺少必填字段：${fieldConfig?.label || field}`);
-      }
-    }
-
-    typeConfig.extraValidate(record, errors);
-
-    const duplicateInImport = parsedRows.findIndex((r, i) => {
-      if (i >= rowIndex) return false;
-      return typeConfig.internalDuplicateCheck(r, record);
-    });
-    if (duplicateInImport !== -1) {
-      errors.push(`与导入文件中第${duplicateInImport + 2}行数据重复（${typeConfig.duplicateLabel}）`);
-    }
-
-    const duplicateInExisting = typeConfig.duplicateCheck(record, existingRecords);
-    if (duplicateInExisting) {
-      errors.push(typeConfig.existingDuplicateLabel);
-    }
-
-    return { record, errors };
-  }
-
-  function analyzeImport(text) {
-    if (!text.trim()) {
-      setImportPreview(null);
-      return;
-    }
-
-    setImportPreviewTab('valid');
-
-    const typeConfig = currentImportConfig();
-
-    try {
-      const { headers, rows } = parseCSV(text);
-      if (headers.length === 0 || rows.length === 0) {
-        setImportPreview({ error: '无法解析CSV数据，请检查格式是否正确' });
-        return;
-      }
-
-      const fieldMapping = {};
-      const recognizedFields = [];
-      const unrecognizedFields = [];
-
-      headers.forEach(header => {
-        const matched = matchField(header, typeConfig.fieldAliasMap);
-        fieldMapping[header] = matched;
-        if (matched) {
-          recognizedFields.push({ csv: header, field: matched, label: typeConfig.config.fields.find(f => f.key === matched)?.label || matched });
-        } else {
-          unrecognizedFields.push(header);
-        }
-      });
-
-      const missingRequired = typeConfig.requiredFields.filter(key => !recognizedFields.some(f => f.field === key));
-
-      const existingRecords = typeConfig.getExistingRecords();
-      const validRows = [];
-      const errorRows = [];
-      const duplicateRows = [];
-
-      const parsedRows = [];
-      rows.forEach((row, index) => {
-        const { record, errors } = validateRow(row, fieldMapping, index, existingRecords, parsedRows, typeConfig);
-        parsedRows.push(record);
-
-        const hasDuplicateError = errors.some(e => e.includes('重复'));
-        const hasOtherError = errors.some(e => !e.includes('重复'));
-
-        if (hasOtherError) {
-          errorRows.push({ rowIndex: index + 2, data: record, errors });
-        } else if (hasDuplicateError) {
-          duplicateRows.push({ rowIndex: index + 2, data: record, errors });
-          validRows.push({ rowIndex: index + 2, data: record, warnings: errors });
-        } else {
-          validRows.push({ rowIndex: index + 2, data: record, warnings: [] });
-        }
-      });
-
-      setImportPreview({
-        headers,
-        fieldMapping,
-        recognizedFields,
-        unrecognizedFields,
-        missingRequired: missingRequired.map(key => typeConfig.config.fields.find(f => f.key === key)?.label || key),
-        totalRows: rows.length,
-        validRows,
-        errorRows,
-        duplicateRows,
-        canImport: errorRows.length < rows.length && missingRequired.length === 0
-      });
-    } catch (e) {
-      setImportPreview({ error: '解析CSV时发生错误：' + e.message });
-    }
-  }
-
-  function handleFileUpload(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result;
-      if (typeof text === 'string') {
-        setImportText(text);
-        analyzeImport(text);
-      }
-    };
-    reader.readAsText(file, 'UTF-8');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  }
-
-  function handlePaste(event) {
-    const text = event.target.value;
-    setImportText(text);
-    analyzeImport(text);
-  }
-
-  function executeImport() {
-    if (!importPreview || !importPreview.canImport) return;
-
-    const typeConfig = currentImportConfig();
-
-    const newRecords = importPreview.validRows.map(item => typeConfig.buildNewRecord(item));
-
-    const existingRecords = typeConfig.getExistingRecords();
-    const nextRecords = [...newRecords, ...existingRecords];
-    typeConfig.persistFn(nextRecords);
-
-    newRecords.forEach((record) => {
-      logAuditEvent({
-        eventType: typeConfig.auditEventType,
-        targetType: typeConfig.targetType,
-        targetId: record.id,
-        afterData: record,
-        metadata: typeConfig.auditMetadata(record),
-        operator: operatorName,
-      });
-    });
-
-    const successCount = newRecords.length;
-    const errorCount = importPreview.errorRows.length;
-    const duplicateCount = importPreview.duplicateRows.length;
-
-    alert(`导入完成！\n\n成功导入：${successCount} 条\n错误行：${errorCount} 条（未导入）\n重复提示：${duplicateCount} 条（已导入但存在重复风险）`);
-
-    setShowImportModal(false);
-    setImportText('');
-    setImportPreview(null);
-
-    if (importType === 'application') setActiveTab('application');
-    else if (importType === 'inventory') setActiveTab('inventory');
-    else if (importType === 'template') setActiveTab('templates');
-  }
-
-  function escapeCSVField(field, delimiter = ',') {
-    const str = String(field ?? '');
-    if (str.includes(delimiter) || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-      return '"' + str.replace(/"/g, '""') + '"';
-    }
-    return str;
-  }
-
-  function getSampleCSV(typeKey) {
-    const cfg = importTypeConfigs[typeKey || importType];
-    const delimiter = ',';
-    const headers = cfg.config.fields.map(f => escapeCSVField(f.label, delimiter)).join(delimiter);
-    const sampleRow = cfg.config.fields.map(f => {
-      const value = f.type === 'select' ? (f.options[0] || '') : (f.placeholder || '');
-      return escapeCSVField(value, delimiter);
-    }).join(delimiter);
-    return `${headers}\n${sampleRow}`;
-  }
-
-  function copySampleCSV() {
-    navigator.clipboard.writeText(getSampleCSV()).then(() => {
-      alert('示例CSV格式已复制到剪贴板！');
-    });
-  }
-
-  function downloadSampleCSV() {
-    const typeConfig = currentImportConfig();
-    const csv = getSampleCSV();
-    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = typeConfig.sampleFilename;
-    link.click();
-    URL.revokeObjectURL(url);
   }
 
   function addInventory(event) {
@@ -4057,7 +3598,7 @@ function App() {
                 className="primary"
                 type="button"
                 style={{ background: '#0d9488', marginTop: '10px' }}
-                onClick={() => { setImportType('application'); setShowImportModal(true); setImportText(''); setImportPreview(null); setImportTab('paste'); setImportPreviewTab('valid'); }}
+                onClick={() => { switchImportType('application'); setImportTab('paste'); setShowImportModal(true); }}
               >
                 <Upload size={18} />导入CSV
               </button>
@@ -4996,7 +4537,7 @@ function App() {
                 className="primary"
                 type="button"
                 style={{ background: inventoryConfig.accent, marginTop: '10px' }}
-                onClick={() => { setImportType('inventory'); setShowImportModal(true); setImportText(''); setImportPreview(null); setImportTab('paste'); setImportPreviewTab('valid'); }}
+                onClick={() => { switchImportType('inventory'); setImportTab('paste'); setShowImportModal(true); }}
               >
                 <Upload size={18} />导入CSV
               </button>
@@ -5461,7 +5002,7 @@ function App() {
                 className="primary"
                 type="button"
                 style={{ background: templateConfig.accent, marginTop: '10px' }}
-                onClick={() => { setImportType('template'); setShowImportModal(true); setImportText(''); setImportPreview(null); setImportTab('paste'); setImportPreviewTab('valid'); }}
+                onClick={() => { switchImportType('template'); setImportTab('paste'); setShowImportModal(true); }}
               >
                 <Upload size={18} />导入CSV
               </button>
@@ -7232,7 +6773,7 @@ function App() {
               <button
                 className="import-modal-close"
                 type="button"
-                onClick={() => { setShowImportModal(false); setImportText(''); setImportPreview(null); setImportPreviewTab('valid'); }}
+                onClick={() => { setShowImportModal(false); resetImportState(); }}
               >
                 <X size={20} />
               </button>
@@ -7244,7 +6785,7 @@ function App() {
                   key={key}
                   className={'import-type-tab ' + (importType === key ? 'import-type-tab-active' : '')}
                   type="button"
-                  onClick={() => { setImportType(key); setImportText(''); setImportPreview(null); setImportPreviewTab('valid'); }}
+                  onClick={() => switchImportType(key)}
                 >
                   {cfg.label}
                 </button>
@@ -7531,7 +7072,7 @@ function App() {
               <button
                 type="button"
                 className="import-cancel-btn"
-                onClick={() => { setShowImportModal(false); setImportText(''); setImportPreview(null); setImportPreviewTab('valid'); }}
+                onClick={() => { setShowImportModal(false); resetImportState(); }}
               >
                 取消
               </button>
