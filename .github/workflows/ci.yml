@@ -1,0 +1,97 @@
+name: CI Quality Gate
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+
+jobs:
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  test-engine:
+    name: Core Engine Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:engine
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+
+  test-import:
+    name: Import Module Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:import
+
+  test-smoke:
+    name: Page Smoke Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:smoke
+
+  build:
+    name: Production Build
+    runs-on: ubuntu-latest
+    needs: [typecheck, test-engine, test-import, test-smoke]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  qa-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    needs: [typecheck, test-engine, test-import, test-smoke, build]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          echo "typecheck: ${{ needs.typecheck.result }}"
+          echo "test-engine: ${{ needs.test-engine.result }}"
+          echo "test-import: ${{ needs.test-import.result }}"
+          echo "test-smoke: ${{ needs.test-smoke.result }}"
+          echo "build: ${{ needs.build.result }}"
+          if [[ "${{ needs.typecheck.result }}" != "success" || \
+                "${{ needs.test-engine.result }}" != "success" || \
+                "${{ needs.test-import.result }}" != "success" || \
+                "${{ needs.test-smoke.result }}" != "success" || \
+                "${{ needs.build.result }}" != "success" ]]; then
+            echo "::error::Quality gate failed - one or more checks did not pass"
+            exit 1
+          fi
+          echo "Quality gate passed!"
